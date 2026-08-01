@@ -4,6 +4,21 @@ local Providers = require("99.providers")
 
 describe("providers", function()
   describe("OpenCodeProvider", function()
+    local original_support_check
+
+    before_each(function()
+      original_support_check =
+        Providers.OpenCodeProvider._supports_no_session_persistence
+      Providers.OpenCodeProvider._supports_no_session_persistence = function()
+        return true
+      end
+    end)
+
+    after_each(function()
+      Providers.OpenCodeProvider._supports_no_session_persistence =
+        original_support_check
+    end)
+
     it("builds correct command with model", function()
       local request = { model = "anthropic/claude-sonnet-4-5" }
       local cmd =
@@ -24,6 +39,28 @@ describe("providers", function()
       local request = {
         model = "anthropic/claude-sonnet-4-5",
         _99 = { opencode_no_session_persistence = false },
+      }
+      local cmd =
+        Providers.OpenCodeProvider._build_command(nil, "test query", request)
+      eq({
+        "opencode",
+        "run",
+        "--agent",
+        "build",
+        "-m",
+        "anthropic/claude-sonnet-4-5",
+        "test query",
+      }, cmd)
+    end)
+
+    it("skips no-session flag when opencode does not support it", function()
+      Providers.OpenCodeProvider._supports_no_session_persistence = function()
+        return false
+      end
+
+      local request = {
+        model = "anthropic/claude-sonnet-4-5",
+        _99 = { opencode_no_session_persistence = true },
       }
       local cmd =
         Providers.OpenCodeProvider._build_command(nil, "test query", request)

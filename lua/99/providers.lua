@@ -88,6 +88,8 @@ function BaseProvider:make_request(query, context, observer)
   local extra_args = context._99 and context._99.provider_extra_args or {}
   add_args_before_prompt(command, extra_args)
   logger:debug("make_request", "command", command)
+  local stdout_chunks = {}
+  local stderr_chunks = {}
 
   local proc = vim.system(
     command,
@@ -103,6 +105,7 @@ function BaseProvider:make_request(query, context, observer)
           logger:debug("stdout#error", "err", err)
         end
         if not err and data then
+          table.insert(stdout_chunks, data)
           observer.on_stdout(data)
         end
       end),
@@ -115,7 +118,8 @@ function BaseProvider:make_request(query, context, observer)
         if err and err ~= "" then
           logger:debug("stderr#error", "err", err)
         end
-        if not err then
+        if not err and data then
+          table.insert(stderr_chunks, data)
           observer.on_stderr(data)
         end
       end),
@@ -127,11 +131,20 @@ function BaseProvider:make_request(query, context, observer)
         return
       end
       if obj.code ~= 0 then
-        local str =
-          string.format("process exit code: %d\n%s", obj.code, vim.inspect(obj))
+        local stderr_text = vim.trim(table.concat(stderr_chunks, "\n"))
+        local stdout_text = vim.trim(table.concat(stdout_chunks, "\n"))
+        local str = string.format(
+          "process exit code: %d\nsignal: %s\nstderr:\n%s\nstdout:\n%s",
+          obj.code,
+          tostring(obj.signal),
+          stderr_text ~= "" and stderr_text or "(empty)",
+          stdout_text ~= "" and stdout_text or "(empty)"
+        )
         once_complete("failed", str)
-        logger:fatal(
-          self:_get_provider_name() .. " make_query failed: " .. str,
+        logger:error(
+          self:_get_provider_name() .. " make_query failed",
+          "error",
+          str,
           "obj from results",
           obj
         )
@@ -156,6 +169,7 @@ end
 
 --- @class OpenCodeProvider : _99.Providers.BaseProvider
 local OpenCodeProvider = setmetatable({}, { __index = BaseProvider })
+local opencode_no_session_support
 
 --- @param query string
 --- @param context _99.Prompt
@@ -165,8 +179,16 @@ function OpenCodeProvider._build_command(_, query, context)
     "opencode",
     "run",
   }
+  local wants_no_session_persistence_disabled = not context._99
+    or context._99.opencode_no_session_persistence ~= false
+  local supports_no_session_persistence = true
+  if context._99 then
+    supports_no_session_persistence =
+      OpenCodeProvider._supports_no_session_persistence()
+  end
   if
-    not context._99 or context._99.opencode_no_session_persistence ~= false
+    wants_no_session_persistence_disabled
+    and supports_no_session_persistence
   then
     table.insert(cmd, "--no-session-persistence")
   end
@@ -176,6 +198,32 @@ function OpenCodeProvider._build_command(_, query, context)
   table.insert(cmd, context.model)
   table.insert(cmd, query)
   return cmd
+end
+
+--- @return boolean
+function OpenCodeProvider._supports_no_session_persistence()
+  if opencode_no_session_support ~= nil then
+    return opencode_no_session_support
+  end
+
+  local ok, proc = pcall(vim.system, { "opencode", "run", "--help" }, {
+    text = true,
+  })
+  if not ok or not proc then
+    opencode_no_session_support = false
+    return false
+  end
+
+  local result = proc:wait()
+  local output = (result and result.stdout or "")
+    .. "\n"
+    .. (result and result.stderr or "")
+  opencode_no_session_support = output:find(
+    "%-%-no%-session%-persistence",
+    1,
+    false
+  ) ~= nil
+  return opencode_no_session_support
 end
 
 --- @return string
