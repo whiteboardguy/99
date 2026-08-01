@@ -1,4 +1,4 @@
--- luacheck: globals describe it assert
+-- luacheck: globals describe it assert before_each after_each
 local eq = assert.are.same
 local Providers = require("99.providers")
 
@@ -6,6 +6,25 @@ describe("providers", function()
   describe("OpenCodeProvider", function()
     it("builds correct command with model", function()
       local request = { model = "anthropic/claude-sonnet-4-5" }
+      local cmd =
+        Providers.OpenCodeProvider._build_command(nil, "test query", request)
+      eq({
+        "opencode",
+        "run",
+        "--no-session-persistence",
+        "--agent",
+        "build",
+        "-m",
+        "anthropic/claude-sonnet-4-5",
+        "test query",
+      }, cmd)
+    end)
+
+    it("can disable no-session-persistence", function()
+      local request = {
+        model = "anthropic/claude-sonnet-4-5",
+        _99 = { opencode_no_session_persistence = false },
+      }
       local cmd =
         Providers.OpenCodeProvider._build_command(nil, "test query", request)
       eq({
@@ -24,6 +43,43 @@ describe("providers", function()
         "opencode/claude-sonnet-4-5",
         Providers.OpenCodeProvider._get_default_model()
       )
+    end)
+
+    describe("fetch_models", function()
+      local original_system
+
+      before_each(function()
+        original_system = vim.system
+      end)
+
+      after_each(function()
+        vim.system = original_system
+      end)
+
+      it("parses model ids from descriptive output and deduplicates", function()
+        vim.system = function(_, _, cb)
+          cb({
+            code = 0,
+            stdout = [[
+opencode/claude-sonnet-4-5 - Anthropic Sonnet
+opencode/gpt-5
+opencode/claude-sonnet-4-5 - duplicate
+]],
+          })
+        end
+
+        local actual_models, actual_err
+        Providers.OpenCodeProvider.fetch_models(function(models, err)
+          actual_models = models
+          actual_err = err
+        end)
+        vim.wait(100, function()
+          return actual_models ~= nil or actual_err ~= nil
+        end)
+
+        eq(nil, actual_err)
+        eq({ "opencode/claude-sonnet-4-5", "opencode/gpt-5" }, actual_models)
+      end)
     end)
   end)
 
@@ -54,6 +110,8 @@ describe("providers", function()
         Providers.CursorAgentProvider._build_command(nil, "test query", request)
       eq({
         "cursor-agent",
+        "--trust",
+        "--force",
         "--model",
         "anthropic/claude-sonnet-4-5",
         "--print",
@@ -167,6 +225,24 @@ describe("providers", function()
       _99.setup({})
       local state = _99.__get_state()
       eq({}, state.provider_extra_args)
+    end)
+  end)
+
+  describe("opencode session persistence option", function()
+    it("defaults to no-session-persistence enabled", function()
+      local _99 = require("99")
+      _99.setup({})
+      local state = _99.__get_state()
+      eq(true, state.opencode_no_session_persistence)
+    end)
+
+    it("can be disabled via setup option", function()
+      local _99 = require("99")
+      _99.setup({
+        opencode_no_session_persistence = false,
+      })
+      local state = _99.__get_state()
+      eq(false, state.opencode_no_session_persistence)
     end)
   end)
 

@@ -35,10 +35,11 @@ local function over_range(context, opts)
   local top_status = RequestStatus.new(
     250,
     context._99.ai_stdout_rows or 1,
-    "Implementing",
+    "Generating visual edit",
     top_mark
   )
-  local bottom_status = RequestStatus.new(250, 1, "Implementing", bottom_mark)
+  local bottom_status =
+    RequestStatus.new(250, 1, "Generating for selection", bottom_mark)
   local clean_up = make_clean_up(function()
     top_status:stop()
     bottom_status:stop()
@@ -51,9 +52,18 @@ local function over_range(context, opts)
   context:add_references(refs)
   context:add_clean_up(clean_up)
 
+  if display_ai_status then
+    top_status:push("selection: " .. range:to_string())
+    top_status:push("model: " .. context.model)
+  end
   top_status:start()
   bottom_status:start()
   context:start_request(make_observer(context, {
+    on_start = function()
+      if display_ai_status then
+        top_status:push("waiting for model output...")
+      end
+    end,
     on_complete = function(status, response)
       if status == "cancelled" then
         logger:debug("request cancelled for visual selection, removing marks")
@@ -93,7 +103,10 @@ local function over_range(context, opts)
     end,
     on_stdout = function(line)
       if display_ai_status then
-        top_status:push(line)
+        local text = vim.trim(line)
+        if text ~= "" then
+          top_status:push("ai> " .. text)
+        end
       end
     end,
   }))

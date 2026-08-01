@@ -23,6 +23,20 @@ end
 --- @field _get_default_model fun(): string
 local BaseProvider = {}
 
+--- @param command string[]
+--- @param extra_args string[]
+local function add_args_before_prompt(command, extra_args)
+  if #extra_args == 0 then
+    return command
+  end
+  -- Provider command builders place the user prompt as the final positional arg.
+  -- Injecting provider_extra_args before that preserves CLI flag parsing.
+  local prompt = table.remove(command)
+  vim.list_extend(command, extra_args)
+  table.insert(command, prompt)
+  return command
+end
+
 --- @param callback fun(models: string[]|nil, err: string|nil): nil
 function BaseProvider.fetch_models(callback)
   callback(nil, "This provider does not support listing models")
@@ -72,9 +86,7 @@ function BaseProvider:make_request(query, context, observer)
 
   local command = self:_build_command(query, context)
   local extra_args = context._99 and context._99.provider_extra_args or {}
-  if #extra_args > 0 then
-    vim.list_extend(command, extra_args)
-  end
+  add_args_before_prompt(command, extra_args)
   logger:debug("make_request", "command", command)
 
   local proc = vim.system(
@@ -149,15 +161,21 @@ local OpenCodeProvider = setmetatable({}, { __index = BaseProvider })
 --- @param context _99.Prompt
 --- @return string[]
 function OpenCodeProvider._build_command(_, query, context)
-  return {
+  local cmd = {
     "opencode",
     "run",
-    "--agent",
-    "build",
-    "-m",
-    context.model,
-    query,
   }
+  if
+    not context._99 or context._99.opencode_no_session_persistence ~= false
+  then
+    table.insert(cmd, "--no-session-persistence")
+  end
+  table.insert(cmd, "--agent")
+  table.insert(cmd, "build")
+  table.insert(cmd, "-m")
+  table.insert(cmd, context.model)
+  table.insert(cmd, query)
+  return cmd
 end
 
 --- @return string
@@ -177,7 +195,16 @@ function OpenCodeProvider.fetch_models(callback)
         callback(nil, "Failed to fetch models from opencode")
         return
       end
-      local models = vim.split(obj.stdout, "\n", { trimempty = true })
+      local models = {}
+      local seen = {}
+      for _, line in ipairs(vim.split(obj.stdout, "\n", { trimempty = true })) do
+        local id = vim.trim(line):match("^(%S+)%s+%-")
+          or vim.trim(line):match("^(%S+)$")
+        if id and not seen[id] then
+          table.insert(models, id)
+          seen[id] = true
+        end
+      end
       callback(models, nil)
     end)
   end)

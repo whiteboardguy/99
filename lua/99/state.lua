@@ -19,6 +19,7 @@ end
 --- @field provider_override _99.Providers.BaseProvider | nil
 --- @field __view_log_idx number
 --- @field __tmp_dir string | nil
+--- @field opencode_no_session_persistence boolean
 
 --- unanswered question -- will i need to queue messages one at a time or
 --- just send them all...  So to prepare ill be sending around this state object
@@ -34,6 +35,7 @@ end
 --- @field rules _99.Agents.Rules
 --- @field tracking _99.State.Tracking
 --- @field __tmp_dir string | nil
+--- @field opencode_no_session_persistence boolean
 local State = {}
 State.__index = State
 
@@ -46,6 +48,7 @@ local function create()
     display_errors = false,
     provider_override = nil,
     tmp_dir = nil,
+    opencode_no_session_persistence = true,
   }
 end
 
@@ -72,6 +75,15 @@ end
 function State.new(opts)
   local props = create()
   local _99_state = setmetatable(props, State) --[[@as _99.State]]
+
+  if opts.opencode_no_session_persistence ~= nil then
+    assert(
+      type(opts.opencode_no_session_persistence) == "boolean",
+      "opts.opencode_no_session_persistence must be a boolean"
+    )
+    _99_state.opencode_no_session_persistence =
+      opts.opencode_no_session_persistence
+  end
 
   _99_state.provider_override = opts.provider
   _99_state.provider_extra_args = opts.provider_extra_args or {}

@@ -22,7 +22,18 @@ function M.get_models(provider, callback)
       vim.notify("99: No models available", vim.log.levels.WARN)
       return
     end
-    callback(models, _99.get_model())
+    local current = _99.get_model()
+    local has_current = false
+    for _, model in ipairs(models) do
+      if model == current then
+        has_current = true
+        break
+      end
+    end
+    if not has_current and current ~= "" then
+      table.insert(models, 1, current)
+    end
+    callback(models, current)
   end)
 end
 
