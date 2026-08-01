@@ -22,6 +22,48 @@ end
 --- @field _get_provider_name fun(self: _99.Providers.BaseProvider): string
 --- @field _get_default_model fun(): string
 local BaseProvider = {}
+local opencode_no_session_support
+
+local function cleanup_99_opencode_sessions(logger)
+  vim.system({ "opencode", "session", "list" }, { text = true }, function(list_obj)
+    vim.schedule(function()
+      if list_obj.code ~= 0 then
+        logger:debug(
+          "cleanup_99_opencode_sessions: list failed",
+          "code",
+          list_obj.code
+        )
+        return
+      end
+
+      local ids = {}
+      for _, line in ipairs(vim.split(list_obj.stdout or "", "\n", { trimempty = true })) do
+        if line:find("%[99%.nvim%]", 1, false) then
+          local id = vim.trim(line):match("^(%S+)")
+          if id then
+            table.insert(ids, id)
+          end
+        end
+      end
+
+      for _, id in ipairs(ids) do
+        vim.system({ "opencode", "session", "delete", id }, { text = true }, function(delete_obj)
+          vim.schedule(function()
+            if delete_obj.code ~= 0 then
+              logger:debug(
+                "cleanup_99_opencode_sessions: delete failed",
+                "id",
+                id,
+                "code",
+                delete_obj.code
+              )
+            end
+          end)
+        end)
+      end
+    end)
+  end)
+end
 
 --- @param command string[]
 --- @param extra_args string[]
@@ -159,7 +201,13 @@ function BaseProvider:make_request(query, context, observer)
               "unable to retrieve response from temp file"
             )
           end
+          if self:_get_provider_name() == "OpenCodeProvider" then
+            cleanup_99_opencode_sessions(logger)
+          end
         end)
+      end
+      if obj.code ~= 0 and self:_get_provider_name() == "OpenCodeProvider" then
+        cleanup_99_opencode_sessions(logger)
       end
     end)
   )
@@ -169,7 +217,6 @@ end
 
 --- @class OpenCodeProvider : _99.Providers.BaseProvider
 local OpenCodeProvider = setmetatable({}, { __index = BaseProvider })
-local opencode_no_session_support
 
 --- @param query string
 --- @param context _99.Prompt
@@ -194,6 +241,8 @@ function OpenCodeProvider._build_command(_, query, context)
   end
   table.insert(cmd, "--agent")
   table.insert(cmd, "build")
+  table.insert(cmd, "--title")
+  table.insert(cmd, "[99.nvim]")
   table.insert(cmd, "-m")
   table.insert(cmd, context.model)
   table.insert(cmd, query)
@@ -205,25 +254,7 @@ function OpenCodeProvider._supports_no_session_persistence()
   if opencode_no_session_support ~= nil then
     return opencode_no_session_support
   end
-
-  local ok, proc = pcall(vim.system, { "opencode", "run", "--help" }, {
-    text = true,
-  })
-  if not ok or not proc then
-    opencode_no_session_support = false
-    return false
-  end
-
-  local result = proc:wait()
-  local output = (result and result.stdout or "")
-    .. "\n"
-    .. (result and result.stderr or "")
-  opencode_no_session_support = output:find(
-    "%-%-no%-session%-persistence",
-    1,
-    false
-  ) ~= nil
-  return opencode_no_session_support
+  return false
 end
 
 --- @return string
