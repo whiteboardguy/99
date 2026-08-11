@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert before_each after_each
+---@diagnostic disable: undefined-field, duplicate-set-field
 local Window = require("99.window")
 local eq = assert.are.same
 

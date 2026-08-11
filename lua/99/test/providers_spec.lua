@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert before_each after_each
+---@diagnostic disable: undefined-field, duplicate-set-field, need-check-nil
 local eq = assert.are.same
 local Providers = require("99.providers")
 
@@ -31,6 +32,8 @@ describe("providers", function()
         "build",
         "--title",
         "[99.nvim]",
+        "--format",
+        "json",
         "-m",
         "anthropic/claude-sonnet-4-5",
         "test query",
@@ -51,6 +54,8 @@ describe("providers", function()
         "build",
         "--title",
         "[99.nvim]",
+        "--format",
+        "json",
         "-m",
         "anthropic/claude-sonnet-4-5",
         "test query",
@@ -75,6 +80,8 @@ describe("providers", function()
         "build",
         "--title",
         "[99.nvim]",
+        "--format",
+        "json",
         "-m",
         "anthropic/claude-sonnet-4-5",
         "test query",
@@ -295,6 +302,44 @@ opencode/claude-sonnet-4-5 - duplicate
       eq("function", type(Providers.ClaudeCodeProvider.make_request))
       eq("function", type(Providers.CursorAgentProvider.make_request))
       eq("function", type(Providers.GeminiCLIProvider.make_request))
+    end)
+  end)
+
+  describe("_extract_response", function()
+    it(
+      "parses the last completed text part from opencode json events",
+      function()
+        local stdout = table.concat({
+          '{"type":"step_start","timestamp":1,"sessionID":"s1","part":{"type":"step-start"}}',
+          '{"type":"tool_use","timestamp":2,"sessionID":"s1","part":{"type":"tool","tool":"bash","state":{"status":"completed"}}}',
+          '{"type":"text","timestamp":3,"sessionID":"s1","part":{"type":"text","text":"first draft","time":{"end":123}}}',
+          '{"type":"text","timestamp":4,"sessionID":"s1","part":{"type":"text","text":"  final answer  ","time":{"end":124}}}',
+        }, "\n")
+
+        eq(
+          "  final answer  ",
+          Providers.OpenCodeProvider._extract_response(nil, stdout)
+        )
+      end
+    )
+
+    it("returns nil when there is no completed text part", function()
+      local stdout = table.concat({
+        '{"type":"tool_use","timestamp":1,"sessionID":"s1","part":{"type":"tool","tool":"bash"}}',
+        '{"type":"session.error","timestamp":2,"sessionID":"s1","error":{}}',
+      }, "\n")
+
+      eq(nil, Providers.OpenCodeProvider._extract_response(nil, stdout))
+    end)
+
+    it("returns nil for empty or nil stdout", function()
+      eq(nil, Providers.OpenCodeProvider._extract_response(nil, ""))
+      eq(nil, Providers.OpenCodeProvider._extract_response(nil, nil))
+    end)
+
+    it("default provider returns trimmed stdout", function()
+      eq("hello", Providers.BaseProvider:_extract_response("  hello  "))
+      eq(nil, Providers.BaseProvider:_extract_response("   "))
     end)
   end)
 end)

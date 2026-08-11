@@ -18,7 +18,8 @@ local M = {}
 --- @param str string The string to escape
 --- @return string The escaped string safe for use in Lua patterns
 function M.escape_pattern(str)
-  return str:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+  local escaped = str:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+  return escaped
 end
 
 --- @param provider _99.CompletionProvider

@@ -234,10 +234,29 @@ function Range:new(buffer, start, end_)
   }, self)
 end
 
+--- Build a range from the current buffer's visual selection marks (`'<` and
+--- `'>`).  Returns nil when the marks are unset or point past the end of the
+--- buffer (`'<`/`'>` are per-buffer marks, so a selection made elsewhere
+--- simply reads back as unset here).
+---
+--- @return _99.Range | nil
 function Range.from_visual_selection()
   local buffer = vim.api.nvim_get_current_buf()
   local start_pos = vim.fn.getpos("'<")
   local end_pos = vim.fn.getpos("'>")
+
+  --- getpos returns {bufnr, lnum, col, off} with 0 for an unset mark;
+  --- '< and '> are per-buffer marks, so a selection made in another buffer
+  --- simply reads back as unset here
+  if start_pos[2] == 0 or end_pos[2] == 0 then
+    return nil
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(buffer)
+  if start_pos[2] > line_count then
+    return nil
+  end
+
   local start = Point:from_1_based(start_pos[2], start_pos[3])
   local end_ = Point:from_1_based(end_pos[2], end_pos[3])
 
@@ -275,17 +294,24 @@ function Range.from_visual_selection()
     --- we need to capture the whole line, therefore its end of line + 1
     end_col = end_col
   else
-    --- we are using zero based point, which means length of line includes the new_line character
-    end_col = #end_line[1]
+    --- charwise selections carry the real end column in the mark; only clamp
+    --- to the end of the line when the mark column is stale / linewise INT_MAX
+    local mark_col = end_pos[3]
+    local line_len = #end_line[1]
+    if mark_col > 0 and mark_col <= line_len then
+      end_col = mark_col
+    else
+      end_col = line_len
+    end
   end
 
   local actual_end = Point.from_0_based(end_row, end_col)
   return Range:new(buffer, start, actual_end)
 end
 
----@param node _99.treesitter.Node
----@param buffer number
----@return _99.Range
+--- @param node TSNode
+--- @param buffer number
+--- @return _99.Range
 function Range:from_ts_node(node, buffer)
   -- ts is zero based
   local start_row, start_col, _ = node:start()

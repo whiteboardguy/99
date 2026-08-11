@@ -52,7 +52,7 @@ function M.get_providers()
   local current = ""
   local current_provider = _99.get_provider()
   if is_selectable_provider(current_provider) then
-    current = current_provider._get_provider_name()
+    current = current_provider:_get_provider_name()
   elseif #names > 0 then
     current = names[1]
   end

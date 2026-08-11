@@ -9,6 +9,58 @@ local function default_completion()
   return { source = nil, custom_rules = {} }
 end
 
+--- cached rules + the signature they were built from; rules only get
+--- re-globbed when the signature changes (setup runs, request starts, etc.)
+--- @type {rules: _99.Agents.Rules, sig: string} | nil
+local cached_rules
+
+--- Cheap fingerprint of every rule directory: the dir mtime (catches
+--- add/remove) plus the mtime of each direct SKILL.md and <name>/SKILL.md
+--- (catches content edits).  Uses uv stats, not globs.
+---
+--- @param dirs string[]
+--- @return string
+local function rules_signature(dirs)
+  local parts = {}
+  for _, dir in ipairs(dirs) do
+    local expanded = vim.fn.expand(dir)
+    local stat = vim.uv.fs_stat(expanded)
+    if not stat then
+      table.insert(parts, expanded .. "=missing")
+    else
+      local sig = expanded .. "=" .. stat.mtime.sec .. ":" .. stat.mtime.nsec
+
+      local direct = vim.uv.fs_stat(vim.fs.joinpath(expanded, "SKILL.md"))
+      if direct then
+        sig = sig .. "|direct=" .. direct.mtime.sec .. ":" .. direct.mtime.nsec
+      end
+
+      local handle = vim.uv.fs_scandir(expanded)
+      if handle then
+        local skills = {}
+        while true do
+          local name = vim.uv.fs_scandir_next(handle)
+          if not name then
+            break
+          end
+          local fstat =
+            vim.uv.fs_stat(vim.fs.joinpath(expanded, name, "SKILL.md"))
+          if fstat then
+            table.insert(
+              skills,
+              name .. ":" .. fstat.mtime.sec .. ":" .. fstat.mtime.nsec
+            )
+          end
+        end
+        table.sort(skills)
+        sig = sig .. "{" .. table.concat(skills, ",") .. "}"
+      end
+      table.insert(parts, sig)
+    end
+  end
+  return table.concat(parts, ";")
+end
+
 --- @class _99.StateProps
 --- @field model string
 --- @field md_files string[]
@@ -128,13 +180,20 @@ end
 --- a lot of performance tuning.  I am just reading every file, and this could
 --- take a decent amount of time if there are lots of rules.
 ---
---- Simple perfs:
---- 1. read 4096 bytes at a tiem instead of whole file and parse out lines
---- 2. don't show the docs
---- 3. do the operation once at setup instead of every time.
----    likely not needed to do this all the time.
+--- The rules themselves are now cached and only re-globbed when the rule
+--- directories change (see rules_signature above); this runs on every prompt
+--- creation but is now just a handful of uv.fs_stat calls.
 function State:refresh_rules()
-  self.rules = Agents.rules(self)
+  local dirs = self.completion.custom_rules or {}
+  local sig = rules_signature(dirs)
+  if not cached_rules or cached_rules.sig ~= sig then
+    local rules = Agents.rules(self)
+    cached_rules = {
+      rules = rules,
+      sig = sig,
+    }
+  end
+  self.rules = cached_rules.rules
   Extensions.refresh(self)
 end
 

@@ -19,6 +19,7 @@ local Prompt = require("99.prompt")
 --- @docs base
 --- @field history _99.Prompt[]
 --- @field id_to_request table<number, _99.Prompt>
+--- @field active_set table<number, _99.Prompt>
 --- @field setup fun(opts: _99.State.Tracking.Config.Options): nil
 local Tracking = {}
 Tracking.__index = Tracking
@@ -31,6 +32,8 @@ function Tracking.new(_99, previous_state)
 
   tracking.history = {}
   tracking.id_to_request = {}
+  --- @type table<number, _99.Prompt>
+  tracking.active_set = {}
 
   if not previous_state then
     return tracking
@@ -50,6 +53,14 @@ function Tracking:track(context)
   assert(context:valid(), "context is not valid")
   table.insert(self.history, context)
   self.id_to_request[context.xid] = context
+  if context.state == "requesting" then
+    self.active_set[context.xid] = context
+  end
+end
+
+--- @param context _99.Prompt
+function Tracking:complete(context)
+  self.active_set[context.xid] = nil
 end
 
 --- @return number
@@ -84,20 +95,16 @@ end
 --- @return _99.Prompt[]
 function Tracking:active()
   local out = {}
-  for _, r in pairs(self.history) do
-    if r.state == "requesting" then
-      table.insert(out, r)
-    end
+  for _, r in pairs(self.active_set) do
+    table.insert(out, r)
   end
   return out
 end
 
 function Tracking:active_count()
   local count = 0
-  for _, r in pairs(self.history) do
-    if r.state == "requesting" then
-      count = count + 1
-    end
+  for _ in pairs(self.active_set) do
+    count = count + 1
   end
   return count
 end

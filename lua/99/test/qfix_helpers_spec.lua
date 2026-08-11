@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert
+---@diagnostic disable: undefined-field, duplicate-set-field
 local QFixHelpers = require("99.ops.qfix-helpers")
 local eq = assert.are.same
 local create_entries = QFixHelpers.create_qfix_entries

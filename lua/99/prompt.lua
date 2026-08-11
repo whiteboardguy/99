@@ -100,6 +100,13 @@ local function set_defaults(context, _99)
   context.full_path = full_path
   context.marks = {}
   context.started_at = Time.now()
+
+  --- the temp files are only needed until the response has been retrieved,
+  --- so remove them when the request is stopped (success, failure, cancel)
+  table.insert(context.clean_ups, function()
+    os.remove(context.tmp_file)
+    os.remove(context.tmp_file .. "-prompt")
+  end)
 end
 
 --- TODO: Work item for "TODO implementation"
@@ -157,12 +164,19 @@ function Prompt.vibe(_99)
 end
 
 --- @param _99 _99.State
---- @return _99.Prompt
+--- @return _99.Prompt | nil
 function Prompt.visual(_99)
   _99:refresh_rules()
 
   set_selection_marks()
   local range = Range.from_visual_selection()
+  if not range then
+    vim.notify(
+      "[99] no valid visual selection: marks are missing, stale, or from another buffer",
+      vim.log.levels.WARN
+    )
+    return nil
+  end
 
   local file_type = vim.bo[0].ft
   local buffer = vim.api.nvim_get_current_buf()
@@ -247,6 +261,7 @@ function Prompt:_observer(obs)
     end,
     on_complete = function(status, res)
       self.state = status
+      self._99.tracking:complete(self)
       if obs then
         obs.on_complete(status, res)
       end
@@ -324,6 +339,7 @@ function Prompt:cancel()
   end
 
   self.state = "cancelled"
+  self._99.tracking:complete(self)
   local proc = self._proc
   ---@diagnostic disable-next-line: undefined-field
   if proc and proc.pid then

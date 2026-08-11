@@ -45,6 +45,7 @@ end
 
 --- @class LoggerSink
 --- @field write_line fun(LoggerSink, string): nil
+--- @field flush? fun(self: LoggerSink): nil
 
 --- @class VoidLogger : LoggerSink
 local VoidSink = {}
@@ -61,8 +62,13 @@ end
 
 --- @class FileSink : LoggerSink
 --- @field fd number
+--- @field write_count number
 local FileSink = {}
 FileSink.__index = FileSink
+
+--- fsync is a disk flush syscall; doing it per line makes debug logging
+--- painfully slow.  flush every N lines instead.
+local FSYNC_INTERVAL = 50
 
 --- @param path string
 --- @return LoggerSink
@@ -78,6 +84,7 @@ function FileSink:new(path)
 
   return setmetatable({
     fd = fd,
+    write_count = 0,
   }, self)
 end
 
@@ -87,6 +94,13 @@ function FileSink:write_line(str)
   if not success then
     error("unable to write to file sink", err)
   end
+  self.write_count = self.write_count + 1
+  if self.write_count % FSYNC_INTERVAL == 0 then
+    vim.uv.fs_fsync(self.fd)
+  end
+end
+
+function FileSink:flush()
   vim.uv.fs_fsync(self.fd)
 end
 
@@ -228,36 +242,34 @@ function Logger:_cache_log(line)
   end
 
   local cache = logger_cache[id]
-  local new_cache = false
   if not cache then
     cache = {
       last_access = time.now(),
       logs = {},
     }
     logger_cache[id] = cache
-    table.insert(logger_list, id)
-    new_cache = true
   end
   cache.last_access = time.now()
   table.insert(cache.logs, line)
-  table.sort(logger_list, function(a, b)
-    assert(
-      logger_cache[a] and logger_cache[b],
-      "logger list is out of sync with logger cache: "
-        .. tostring(a)
-        .. " and "
-        .. tostring(b)
-    )
-    local a_time = logger_cache[a].last_access
-    local b_time = logger_cache[b].last_access
-    return a_time > b_time
-  end)
 
-  if not new_cache then
-    return
+  --- move the id to the front (most recently used first); the list is
+  --- bounded by max_requests_in_logger_cache so this is cheap
+  for i, existing in ipairs(logger_list) do
+    if existing == id then
+      table.remove(logger_list, i)
+      break
+    end
   end
+  table.insert(logger_list, 1, id)
 
   Logger._trim_cache()
+end
+
+--- Flush any buffered output (fsync for file sinks).  Called on exit.
+function Logger:flush()
+  if self.sink and self.sink.flush then
+    self.sink:flush()
+  end
 end
 
 --- This is a _TEST ONLY_ function.  you should not call this function outside
@@ -339,7 +351,7 @@ end
 --- @param ... any
 function Logger:fatal(msg, ...)
   self:_log(levels.FATAL, msg, ...)
-  assert(false, "fatal msg recieved: " .. msg, ...)
+  assert(false, "fatal msg received: " .. msg, ...)
 end
 
 --- @param test any
@@ -352,26 +364,12 @@ function Logger:assert(test, msg, ...)
 end
 
 function Logger._trim_cache()
-  local count = 0
-  local oldest = nil
-  local oldest_key = nil
-  for k, log in pairs(logger_cache) do
-    if oldest == nil or log.last_access < oldest.last_access then
-      oldest = log
-      oldest_key = k
-    end
-    count = count + 1
-  end
-
-  if count > max_requests_in_logger_cache then
-    assert(oldest_key, "oldest key must exist")
-    logger_cache[oldest_key] = nil
-
-    for i, id in ipairs(logger_list) do
-      if id == oldest_key then
-        table.remove(logger_list, i)
-        break
-      end
+  --- logger_list is ordered most-recently-used first, so the oldest
+  --- entries are at the tail
+  while #logger_list > max_requests_in_logger_cache do
+    local oldest_id = table.remove(logger_list)
+    if oldest_id then
+      logger_cache[oldest_id] = nil
     end
   end
 end

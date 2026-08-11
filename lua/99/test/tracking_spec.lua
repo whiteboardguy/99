@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert
+---@diagnostic disable: undefined-field, duplicate-set-field
 local _99 = require("99")
 local Tracking = require("99.state.tracking")
 local test_utils = require("99.test.test_utils")

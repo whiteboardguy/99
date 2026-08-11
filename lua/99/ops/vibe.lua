@@ -53,9 +53,14 @@ local function vibe(context, opts)
       logger:debug("request cancelled for search")
     elseif status == "failed" then
       logger:error(
-        "request failed for search",
+        "request failed for vibe",
         "error response",
         response or "no response provided"
+      )
+      vim.notify(
+        "[99] vibe request failed: "
+          .. (response or "no response provided"):sub(1, 300),
+        vim.log.levels.ERROR
       )
     elseif status == "success" then
       finish_vibe(context, response)

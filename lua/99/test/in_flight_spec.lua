@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert after_each
+---@diagnostic disable: undefined-field, duplicate-set-field
 local _99 = require("99")
 local Prompt = require("99.prompt")
 local Window = require("99.window")

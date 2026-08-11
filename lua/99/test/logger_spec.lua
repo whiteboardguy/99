@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert before_each after_each
+---@diagnostic disable: undefined-field, duplicate-set-field
 local Logger = require("99.logger.logger")
 local time = require("99.time")
 local eq = assert.are.same

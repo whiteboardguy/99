@@ -7,7 +7,8 @@ local M = {}
 --- @param current string
 --- @return string[]
 local function promote_current(list, current)
-  local out = { unpack(list) }
+  local out = {}
+  vim.list_extend(out, list)
   for i, item in ipairs(out) do
     if item == current then
       table.remove(out, i)

@@ -1,0 +1,10 @@
+--- A completion item as consumed by the native/cmp/blink sources.
+--- This file is annotation-only: it is never required at runtime; it exists
+--- so the language server can resolve the `CompletionItem` type globally.
+--- @class CompletionItem
+--- @field label string
+--- @field insertText string
+--- @field filterText string?
+--- @field kind integer
+--- @field documentation string | {kind: string, value: string}?
+--- @field detail string?

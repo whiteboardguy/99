@@ -22,13 +22,13 @@ end
 --- @field read_tmp fun(): string
 local prompts = {
   role = function()
-    return [[ You are a software engineering assistant mean to create robust and conanical code ]]
+    return [[ You are a software engineering assistant mean to create robust and canonical code ]]
   end,
   tutorial = function()
     return [[
 You are given a prompt and context and you must craft a tutorial.  If a set of
 context has links, read through them thoroughly and decide which ones to retrieve.
-Once you have fetched all the relavent content, review it thoroughly before
+Once you have fetched all the relevant content, review it thoroughly before
 crafting the tutorial
 
 <Rule>The response format must be valid Markdown</Rule>
@@ -40,7 +40,7 @@ crafting the tutorial
 <Output>
 /path/to/project/src/foo.js:24:8,3,Some notes here about some stuff, it can contain commas
 /path/to/project/src/foo.js:71:12,7,more notes, everything is great!
-/path/to/project/src/bar.js:13:2,1,more notes again, this time specfically about bar and why bar is so important
+/path/to/project/src/bar.js:13:2,1,more notes again, this time specifically about bar and why bar is so important
 /path/to/project/src/baz.js:1:1,52,Notes about why baz is very important to the results
 </Output>
 <Rule>Text locations are in the format of: /path/to/file.ext:lnum:cnum,X,NOTES
@@ -79,7 +79,7 @@ you are given a prompt and you must search through this project and return code 
 <Output>
 /path/to/project/src/foo.js:24:8,3,Some notes here about some stuff, it can contain commas
 /path/to/project/src/foo.js:71:12,7,more notes, everything is great!
-/path/to/project/src/bar.js:13:2,1,more notes again, this time specfically about bar and why bar is so important
+/path/to/project/src/bar.js:13:2,1,more notes again, this time specifically about bar and why bar is so important
 /path/to/project/src/baz.js:1:1,52,Notes about why baz is very important to the results
 </Output>
 <Rule>Text locations are in the format of: /path/to/file.ext:lnum:cnum,X,NOTES
@@ -144,6 +144,7 @@ ONLY provide requested changes by writing the change to TEMP_FILE
     )
   end,
   visual_selection = function(range)
+    local selection_lines = #vim.split(range:to_text(), "\n")
     return string.format(
       [[
 You receive a selection in neovim that you need to replace with new code.
@@ -158,10 +159,18 @@ consider the context of the selection and what you are suppose to be implementin
 <SURROUNDING_CONTEXT>
 %s
 </SURROUNDING_CONTEXT>
+<Rules>
+The selection is %d line(s) long.
+TEMP_FILE must contain EXACTLY the replacement code for the selection and nothing else.
+Never write the whole file.  Never repeat unchanged code.  Never include commentary or markdown code fences.
+Only output the code that should take the place of the selection.
+If you cannot write TEMP_FILE, put the replacement code in your final message instead.
+</Rules>
 ]],
       range:to_string(),
       range:to_text(),
-      get_surrounding_context(range, 100)
+      get_surrounding_context(range, 100),
+      selection_lines
     )
   end,
   read_tmp = function()
@@ -181,7 +190,12 @@ local prompt_settings = {
   --- @param tmp_file string
   --- @return string
   tmp_file_location = function(tmp_file)
-    return string.format("<TEMP_FILE>%s</TEMP_FILE>", tmp_file)
+    --- absolute path so the agent resolves the file deterministically
+    --- regardless of its working directory
+    return string.format(
+      "<TEMP_FILE>%s</TEMP_FILE>",
+      vim.fn.fnamemodify(tmp_file, ":p")
+    )
   end,
 
   --- @return string

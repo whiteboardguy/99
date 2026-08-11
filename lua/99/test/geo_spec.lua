@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert before_each after_each
+---@diagnostic disable: undefined-field, duplicate-set-field, need-check-nil
 local geo = require("99.geo")
 local Point = geo.Point
 local Range = geo.Range
@@ -128,6 +129,71 @@ describe("Range", function()
     eq("  local x = 1", text)
   end)
 
+  it("should use the actual end column for charwise selections", function()
+    vim.api.nvim_win_set_cursor(0, { 2, 2 })
+    vim.api.nvim_feedkeys("v", "x", false)
+
+    test_utils.next_frame()
+    vim.api.nvim_feedkeys("6l", "x", false)
+
+    test_utils.next_frame()
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<Esc>", true, false, true),
+      "x",
+      false
+    )
+
+    local range = Range.from_visual_selection()
+    -- selecting "local x" must not extend to the end of the line
+    eq("local x", range:to_text())
+  end)
+
+  it("should keep the end column for multi-line charwise selections", function()
+    vim.api.nvim_win_set_cursor(0, { 2, 2 })
+    vim.api.nvim_feedkeys("v", "x", false)
+
+    test_utils.next_frame()
+    vim.api.nvim_feedkeys("j5l", "x", false)
+
+    test_utils.next_frame()
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("<Esc>", true, false, true),
+      "x",
+      false
+    )
+
+    local range = Range.from_visual_selection()
+    eq("local x = 1\n  return", range:to_text())
+  end)
+
+  it("should return nil when no visual selection has been made", function()
+    vim.fn.setpos("'<", { 0, 0, 0, 0 })
+    vim.fn.setpos("'>", { 0, 0, 0, 0 })
+
+    eq(nil, Range.from_visual_selection())
+  end)
+
+  it("should ignore selections made in another buffer", function()
+    local other = test_utils.create_file({ "other buffer" }, "lua", 1, 0)
+    vim.fn.setpos("'<", { other, 1, 1, 0 })
+    vim.fn.setpos("'>", { other, 1, 1, 0 })
+    test_utils.create_file({ "current buffer" }, "lua", 1, 0)
+
+    -- '< and '> are per-buffer marks: the current buffer has no selection
+    eq(nil, Range.from_visual_selection())
+  end)
+
+  it(
+    "should return nil when the start mark is past the end of the buffer",
+    function()
+      local b = test_utils.create_file({ "line one" }, "lua", 1, 0)
+      vim.fn.setpos("'<", { b, 5, 1, 0 })
+      vim.fn.setpos("'>", { b, 5, 1, 0 })
+
+      eq(nil, Range.from_visual_selection())
+    end
+  )
+
   it(
     "should handle from_visual_selection when visual marks point past buffer end",
     function()
@@ -136,7 +202,6 @@ describe("Range", function()
         "line two",
       }, "lua", 1, 0)
 
-      local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
       vim.fn.setpos("'<", { small_buffer, 1, 1, 0 })
       vim.fn.setpos("'>", { small_buffer, 100, 1, 0 })
       local range = Range.from_visual_selection()

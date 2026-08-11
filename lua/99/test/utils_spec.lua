@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert
+---@diagnostic disable: undefined-field, duplicate-set-field
 local Utils = require("99.utils")
 local eq = assert.are.same
 

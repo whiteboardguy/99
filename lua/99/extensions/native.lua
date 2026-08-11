@@ -10,12 +10,11 @@ local function to_native_items(items)
   local out = {}
   for _, item in ipairs(items) do
     local info = ""
-    if item.documentation then
-      if type(item.documentation) == "string" then
-        info = item.documentation
-      elseif item.documentation.value then
-        info = item.documentation.value
-      end
+    local documentation = item.documentation
+    if type(documentation) == "string" then
+      info = documentation
+    elseif type(documentation) == "table" and documentation.value then
+      info = documentation.value
     end
     table.insert(out, {
       word = item.insertText or item.label,

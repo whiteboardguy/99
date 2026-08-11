@@ -10,6 +10,83 @@ local make_observer = CleanUp.make_observer
 local Range = geo.Range
 local Point = geo.Point
 
+--- response size guard: a replacement may be at most this many times the
+--- selection's line count (plus slack) before we treat it as a whole-file
+--- rewrite and refuse to apply it
+local MAX_RESPONSE_MULTIPLIER = 3
+local MAX_RESPONSE_SLACK = 50
+
+--- Remove a wrapping markdown code fence (```lang ... ```) when present.
+--- @param lines string[]
+--- @return string[]
+local function strip_code_fence(lines)
+  local first, last = 1, #lines
+  while first <= #lines and vim.trim(lines[first]) == "" do
+    first = first + 1
+  end
+  while last >= 1 and vim.trim(lines[last]) == "" do
+    last = last - 1
+  end
+  if first > last then
+    return lines
+  end
+  local opener = lines[first]:match("^```%w*%s*$")
+  local closer = lines[last]:match("^```%s*$")
+  if opener and closer then
+    local out = {}
+    for i = first + 1, last - 1 do
+      table.insert(out, lines[i])
+    end
+    return out
+  end
+  return lines
+end
+
+--- Reject responses that clearly are not a replacement for the selection.
+--- Agentic models commonly echo the whole file (for small files the entire
+--- file is part of the surrounding context), which would otherwise be
+--- inserted into the selection.
+---
+--- @param response string
+--- @param range _99.Range
+--- @return string | nil reason when the response should be rejected
+local function rejection_reason(response, range)
+  local lines = strip_code_fence(vim.split(response, "\n"))
+  local response_text = table.concat(lines, "\n")
+  if vim.trim(response_text) == "" then
+    return "response was empty"
+  end
+
+  local selection_lines = #vim.split(range:to_text(), "\n")
+  local limit = math.max(
+    selection_lines * MAX_RESPONSE_MULTIPLIER,
+    selection_lines + MAX_RESPONSE_SLACK
+  )
+  if #lines > limit then
+    return string.format(
+      "response has %d lines but the selection is only %d line(s); refusing to replace with what looks like a whole-file rewrite",
+      #lines,
+      selection_lines
+    )
+  end
+
+  local file_lines = vim.api.nvim_buf_get_lines(range.buffer, 0, -1, false)
+  --- only meaningful when the file is larger than the selection: a response
+  --- reproducing the whole file then contains unchanged lines it should not
+  --- have (when the selection IS the whole file, any response replaces it)
+  if #file_lines > selection_lines then
+    local file_text = vim.trim(table.concat(file_lines, "\n"))
+    if file_text ~= "" then
+      local trimmed = vim.trim(response_text)
+      if trimmed == file_text or trimmed:find(file_text, 1, true) then
+        return "response reproduces the entire file"
+      end
+    end
+  end
+
+  return nil
+end
+
 --- @param context _99.Prompt
 --- @param opts? _99.ops.Opts
 local function over_range(context, opts)
@@ -73,6 +150,11 @@ local function over_range(context, opts)
           "error response",
           response or "no response provided"
         )
+        vim.notify(
+          "[99] visual request failed: "
+            .. (response or "no response provided"):sub(1, 300),
+          vim.log.levels.ERROR
+        )
       elseif status == "success" then
         local valid = top_mark:is_valid() and bottom_mark:is_valid()
         if not valid then
@@ -83,19 +165,32 @@ local function over_range(context, opts)
           return
         end
 
-        if vim.trim(response) == "" then
-          print("response was empty, visual replacement aborted")
-          logger:debug("response was empty, visual replacement aborted")
+        local reason = rejection_reason(response, range)
+        if reason then
+          vim.notify(
+            "[99] visual replacement rejected: " .. reason,
+            vim.log.levels.WARN
+          )
+          logger:error("visual replacement rejected", "reason", reason)
           return
         end
 
         local new_range = Range.from_marks(top_mark, bottom_mark)
-        local lines = vim.split(response, "\n")
+        local lines = strip_code_fence(vim.split(response, "\n"))
 
-        --- HACK: i am adding a new line here because above range will add a mark to the line above.
-        --- that way this appears to be added to "the same line" as the visual selection was
-        --- originally take from
-        table.insert(lines, 1, "")
+        --- HACK: when the selection starts below line 1, the top mark sits at
+        --- the end of the line above, so without a leading empty line the
+        --- replacement would merge into that line.  a selection starting at
+        --- line 1 anchors the mark at (0,0) and needs no such line.
+        local top_pos = vim.api.nvim_buf_get_extmark_by_id(
+          top_mark.buffer,
+          top_mark.nsid,
+          top_mark.id,
+          {}
+        )
+        if top_pos[1] ~= 0 or top_pos[2] ~= 0 then
+          table.insert(lines, 1, "")
+        end
 
         new_range:replace_text(lines)
         context._99:sync()

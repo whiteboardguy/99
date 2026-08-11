@@ -25,6 +25,10 @@ local function setup(content, start_row, start_col, end_row, end_col)
 
   local buffer = test_utils.create_file(content, "lua", start_row, start_col)
 
+  -- Set the visual marks so Prompt.visual can build a real range from them
+  vim.fn.setpos("'<", { buffer, start_row, start_col, 0 })
+  vim.fn.setpos("'>", { buffer, end_row, end_col, 0 })
+
   -- Create a range for the visual selection
   local start_point = Point:from_1_based(start_row, start_col)
   local end_point = Point:from_1_based(end_row, end_col)
@@ -166,4 +170,69 @@ describe("visual", function()
     -- Buffer should remain unchanged on cancellation
     eq(content, r(buffer))
   end)
+
+  it("should reject responses that reproduce the whole file", function()
+    local p, buffer, range = setup(content, 2, 1, 2, 23)
+    local state = _99.__get_state()
+    local context = Prompt.visual(state)
+
+    visual_call_with_range(context, range)
+
+    p:resolve("success", table.concat(content, "\n"))
+    test_utils.next_frame()
+
+    -- Buffer must remain unchanged
+    eq(content, r(buffer))
+  end)
+
+  it("should reject oversized responses", function()
+    local p, buffer, range = setup(content, 2, 1, 2, 23)
+    local state = _99.__get_state()
+    local context = Prompt.visual(state)
+
+    visual_call_with_range(context, range)
+
+    local huge = {}
+    for i = 1, 200 do
+      table.insert(huge, string.format("line %d", i))
+    end
+    p:resolve("success", table.concat(huge, "\n"))
+    test_utils.next_frame()
+
+    eq(content, r(buffer))
+  end)
+
+  it("should strip markdown code fences from responses", function()
+    local p, buffer, range = setup(content, 2, 1, 2, 23)
+    local state = _99.__get_state()
+    local context = Prompt.visual(state)
+
+    visual_call_with_range(context, range)
+
+    p:resolve("success", "```lua\n    return 'implemented!'\n```")
+    test_utils.next_frame()
+
+    eq({
+      "local function foo()",
+      "    return 'implemented!'",
+      "end",
+    }, r(buffer))
+  end)
+
+  it(
+    "should not reject responses that keep the original line of a tiny file",
+    function()
+      local tiny = { "local x = 1" }
+      local p, buffer, range = setup(tiny, 1, 1, 1, 12)
+      local state = _99.__get_state()
+      local context = Prompt.visual(state)
+
+      visual_call_with_range(context, range)
+
+      p:resolve("success", "local x = 1\nreturn x")
+      test_utils.next_frame()
+
+      eq({ "local x = 1", "return x" }, r(buffer))
+    end
+  )
 end)

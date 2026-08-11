@@ -4,6 +4,7 @@ local M = {}
 --- @field enabled boolean?
 --- @field max_file_size number?
 --- @field max_files number?
+--- @field max_completion_items number?
 --- @field exclude string[]?
 
 --- @class _99.Files.File
@@ -13,13 +14,17 @@ local M = {}
 
 local cache = {
   files = {},
+  by_path = {},
+  by_name = {},
   root = "",
+  warming = false,
 }
 
 local config = {
   enabled = true,
   max_file_size = 100 * 1024,
   max_files = 5000,
+  max_completion_items = 500,
   exclude = {
     ".env",
     ".env.*",
@@ -32,18 +37,26 @@ local config = {
     "tmp",
     ".cursor",
   },
+  --- compiled Lua patterns, rebuilt in setup()
+  exclude_patterns = {},
 }
+
+--- @param pattern string
+--- @return string
+local function compile_exclude_pattern(pattern)
+  local compiled = pattern:gsub("%.", "%%.")
+  compiled = compiled:gsub("%*", ".*")
+  return compiled
+end
 
 --- @param pattern string
 --- @return boolean
 local function matches_exclude_pattern(pattern)
-  for _, exclude_pattern in ipairs(config.exclude) do
-    local glob_pattern = exclude_pattern:gsub("%.", "%%."):gsub("%*", ".*")
-
+  for _, exclude_pattern in ipairs(config.exclude_patterns) do
     if
-      pattern:match(glob_pattern .. "$")
-      or pattern:match("^" .. glob_pattern)
-      or pattern:match("/" .. glob_pattern .. "/")
+      pattern:match(exclude_pattern .. "$")
+      or pattern:match("^" .. exclude_pattern)
+      or pattern:match("/" .. exclude_pattern .. "/")
     then
       return true
     end
@@ -69,6 +82,24 @@ end
 function M.set_project_root(root)
   cache.root = root
   cache.files = {}
+  cache.by_path = {}
+  cache.by_name = {}
+end
+
+--- rebuild the path/name lookup tables after the file list changes
+local function rebuild_index()
+  cache.by_path = {}
+  cache.by_name = {}
+  for _, file in ipairs(cache.files) do
+    cache.by_path[file.path] = file
+    cache.by_path[file.absolute_path] = file
+    local by_name = cache.by_name[file.name]
+    if not by_name then
+      by_name = {}
+      cache.by_name[file.name] = by_name
+    end
+    table.insert(by_name, file)
+  end
 end
 
 --- @param root string
@@ -80,19 +111,10 @@ local function is_git_repo(root)
   return stat ~= nil
 end
 
+--- @param output string
 --- @param root string
---- @return _99.Files.File[]
-local function scan_with_git_sync(root)
-  local cmd = string.format(
-    "git -C %s ls-files --cached --others --exclude-standard --deduplicate",
-    vim.fn.shellescape(root)
-  )
-  local output = vim.fn.system(cmd)
-
-  if vim.v.shell_error ~= 0 then
-    return nil
-  end
-
+--- @return _99.Files.File[] | nil
+local function parse_git_files(output, root)
   if output == "" then
     return {}
   end
@@ -124,6 +146,22 @@ local function scan_with_git_sync(root)
   return files
 end
 
+--- @param root string
+--- @return _99.Files.File[] | nil
+local function scan_with_git_sync(root)
+  local cmd = string.format(
+    "git -C %s ls-files --cached --others --exclude-standard --deduplicate",
+    vim.fn.shellescape(root)
+  )
+  local output = vim.fn.system(cmd)
+
+  if vim.v.shell_error ~= 0 then
+    return nil
+  end
+
+  return parse_git_files(output, root)
+end
+
 --- @return string
 function M.get_project_root()
   return cache.root
@@ -144,6 +182,7 @@ function M.discover_files()
         return a.path < b.path
       end)
       cache.files = git_files
+      rebuild_index()
       return git_files
     end
   end
@@ -198,7 +237,55 @@ function M.discover_files()
   end)
 
   cache.files = files
+  rebuild_index()
   return files
+end
+
+--- Start an async git-based discovery so the cache is warm before the user
+--- types `@`; results land in the cache when the process finishes.
+function M.warm()
+  local root = cache.root
+  if
+    root == ""
+    or cache.warming
+    or not config.enabled
+    or not is_git_repo(root)
+  then
+    return
+  end
+
+  cache.warming = true
+  vim.system(
+    {
+      "git",
+      "-C",
+      root,
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "--deduplicate",
+    },
+    { text = true },
+    vim.schedule_wrap(function(obj)
+      cache.warming = false
+      if obj.code ~= 0 then
+        return
+      end
+      --- discard if the project root changed while the scan was running
+      if cache.root ~= root then
+        return
+      end
+      local parsed = parse_git_files(obj.stdout or "", root)
+      if parsed then
+        table.sort(parsed, function(a, b)
+          return a.path < b.path
+        end)
+        cache.files = parsed
+        rebuild_index()
+      end
+    end)
+  )
 end
 
 --- @return _99.Files.File[]
@@ -210,10 +297,18 @@ function M.get_files()
 end
 
 --- @param query string
+--- @param limit number | nil cap on the number of matches returned
 --- @return _99.Files.File[]
-function M.find_matches(query)
+function M.find_matches(query, limit)
   local files = M.get_files()
   if not query or query == "" then
+    if limit then
+      local capped = {}
+      for i = 1, math.min(limit, #files) do
+        table.insert(capped, files[i])
+      end
+      return capped
+    end
     return files
   end
 
@@ -236,6 +331,9 @@ function M.find_matches(query)
 
     if matched then
       table.insert(matches, file)
+      if limit and #matches >= limit then
+        break
+      end
     end
   end
 
@@ -274,25 +372,23 @@ end
 --- @param path string
 --- @return boolean
 function M.is_project_file(path)
-  local files = M.get_files()
-  for _, file in ipairs(files) do
-    if file.path == path or file.name == path then
-      return true
-    end
+  M.get_files()
+  if cache.by_path[path] then
+    return true
   end
-  return false
+  return cache.by_name[path] ~= nil
 end
 
 --- @param path string
 --- @return _99.Files.File | nil
 function M.get_project_file(path)
-  local files = M.get_files()
-  for _, file in ipairs(files) do
-    if file.path == path or file.name == path then
-      return file
-    end
+  M.get_files()
+  local file = cache.by_path[path]
+  if file then
+    return file
   end
-  return nil
+  local by_name = cache.by_name[path]
+  return by_name and by_name[1] or nil
 end
 
 --- @param opts _99.Files.Config?
@@ -302,6 +398,8 @@ function M.setup(opts, rule_dirs)
     config.enabled = opts.enabled ~= false
     config.max_file_size = opts.max_file_size or config.max_file_size
     config.max_files = opts.max_files or config.max_files
+    config.max_completion_items = opts.max_completion_items
+      or config.max_completion_items
     if opts.exclude then
       config.exclude = opts.exclude
     end
@@ -315,6 +413,12 @@ function M.setup(opts, rule_dirs)
       table.insert(config.exclude, normalized)
     end
   end
+
+  -- Precompile the exclude patterns once instead of per file per scan
+  config.exclude_patterns = {}
+  for _, pattern in ipairs(config.exclude) do
+    table.insert(config.exclude_patterns, compile_exclude_pattern(pattern))
+  end
 end
 
 --- @return _99.CompletionProvider
@@ -323,7 +427,7 @@ function M.completion_provider()
     trigger = "@",
     name = "files",
     get_items = function()
-      local files = M.find_matches("")
+      local files = M.find_matches("", config.max_completion_items)
       local items = {}
       for _, file in ipairs(files) do
         table.insert(items, {

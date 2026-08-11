@@ -1,4 +1,5 @@
 -- luacheck: globals describe it assert
+---@diagnostic disable: undefined-field, duplicate-set-field
 local Agents = require("99.extensions.agents")
 local eq = assert.are.same
 

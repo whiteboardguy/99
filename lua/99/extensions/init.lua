@@ -65,6 +65,9 @@ return {
     local cwd = vim.fn.getcwd()
     local git_root = vim.fs.root(cwd, ".git")
     Files.set_project_root(git_root or cwd)
+    --- warm the file cache in the background so the first `@` completion
+    --- does not block the UI with a synchronous git scan
+    Files.warm()
   end,
 
   --- @param _99 _99.State

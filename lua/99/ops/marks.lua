@@ -68,7 +68,7 @@ function Mark.mark_point(buffer, point)
 end
 
 --- @param buffer number
---- @param func _99.treesitter.Function
+--- @param func {function_range: _99.Range}
 --- @return _99.Mark
 function Mark.mark_above_func(buffer, func)
   local start = func.function_range.start
@@ -105,7 +105,7 @@ function Mark.mark_end_of_range(buffer, range)
 end
 
 --- @param buffer number
---- @param func _99.treesitter.Function
+--- @param func {function_range: _99.Range}
 --- @return _99.Mark
 function Mark.mark_func_body(buffer, func)
   local start = func.function_range.start

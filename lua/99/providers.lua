@@ -24,45 +24,66 @@ end
 local BaseProvider = {}
 local opencode_no_session_support
 
-local function cleanup_99_opencode_sessions(logger)
-  vim.system({ "opencode", "session", "list" }, { text = true }, function(list_obj)
-    vim.schedule(function()
-      if list_obj.code ~= 0 then
-        logger:debug(
-          "cleanup_99_opencode_sessions: list failed",
-          "code",
-          list_obj.code
-        )
-        return
-      end
+--- session cleanup spawns `opencode session list` + one delete per session;
+--- debounce it so we do not spawn a process tree after every single request
+local SESSION_CLEANUP_INTERVAL_MS = 30 * 1000
+local last_session_cleanup = 0
 
-      local ids = {}
-      for _, line in ipairs(vim.split(list_obj.stdout or "", "\n", { trimempty = true })) do
-        if line:find("%[99%.nvim%]", 1, false) then
-          local id = vim.trim(line):match("^(%S+)")
-          if id then
-            table.insert(ids, id)
+local function cleanup_99_opencode_sessions(logger)
+  local now = vim.uv.now()
+  if now - last_session_cleanup < SESSION_CLEANUP_INTERVAL_MS then
+    return
+  end
+  last_session_cleanup = now
+
+  vim.system(
+    { "opencode", "session", "list" },
+    { text = true },
+    function(list_obj)
+      vim.schedule(function()
+        if list_obj.code ~= 0 then
+          logger:debug(
+            "cleanup_99_opencode_sessions: list failed",
+            "code",
+            list_obj.code
+          )
+          return
+        end
+
+        local ids = {}
+        for _, line in
+          ipairs(vim.split(list_obj.stdout or "", "\n", { trimempty = true }))
+        do
+          if line:find("%[99%.nvim%]", 1, false) then
+            local id = vim.trim(line):match("^(%S+)")
+            if id then
+              table.insert(ids, id)
+            end
           end
         end
-      end
 
-      for _, id in ipairs(ids) do
-        vim.system({ "opencode", "session", "delete", id }, { text = true }, function(delete_obj)
-          vim.schedule(function()
-            if delete_obj.code ~= 0 then
-              logger:debug(
-                "cleanup_99_opencode_sessions: delete failed",
-                "id",
-                id,
-                "code",
-                delete_obj.code
-              )
+        for _, id in ipairs(ids) do
+          vim.system(
+            { "opencode", "session", "delete", id },
+            { text = true },
+            function(delete_obj)
+              vim.schedule(function()
+                if delete_obj.code ~= 0 then
+                  logger:debug(
+                    "cleanup_99_opencode_sessions: delete failed",
+                    "id",
+                    id,
+                    "code",
+                    delete_obj.code
+                  )
+                end
+              end)
             end
-          end)
-        end)
-      end
-    end)
-  end)
+          )
+        end
+      end)
+    end
+  )
 end
 
 --- @param command string[]
@@ -107,6 +128,15 @@ function BaseProvider:_retrieve_response(context)
   logger:debug("retrieve_results", "results", str)
 
   return true, str
+end
+
+--- @param stdout_text string | nil
+--- @return string | nil
+function BaseProvider:_extract_response(stdout_text)
+  if not stdout_text or vim.trim(stdout_text) == "" then
+    return nil
+  end
+  return vim.trim(stdout_text)
 end
 
 --- @param query string
@@ -193,13 +223,30 @@ function BaseProvider:make_request(query, context, observer)
       else
         vim.schedule(function()
           local ok, res = self:_retrieve_response(context)
-          if ok then
+          if ok and res ~= nil and vim.trim(res) ~= "" then
             once_complete("success", res)
           else
-            once_complete(
-              "failed",
-              "unable to retrieve response from temp file"
-            )
+            --- fallback: some agents never write the temp file (permission
+            --- denials, cwd outside the project root, or they answer in text
+            --- instead).  the final text response is on stdout, so try that.
+            local stdout_text = table.concat(stdout_chunks, "\n")
+            local extracted = self:_extract_response(stdout_text)
+            if extracted and vim.trim(extracted) ~= "" then
+              logger:debug("retrieve_results", "using stdout fallback")
+              once_complete("success", extracted)
+            elseif ok then
+              once_complete(
+                "failed",
+                "no response: the agent neither wrote "
+                  .. context.tmp_file
+                  .. " nor produced a text response"
+              )
+            else
+              once_complete(
+                "failed",
+                "unable to retrieve response from temp file"
+              )
+            end
           end
           if self:_get_provider_name() == "OpenCodeProvider" then
             cleanup_99_opencode_sessions(logger)
@@ -234,8 +281,7 @@ function OpenCodeProvider._build_command(_, query, context)
       OpenCodeProvider._supports_no_session_persistence()
   end
   if
-    wants_no_session_persistence_disabled
-    and supports_no_session_persistence
+    wants_no_session_persistence_disabled and supports_no_session_persistence
   then
     table.insert(cmd, "--no-session-persistence")
   end
@@ -243,10 +289,39 @@ function OpenCodeProvider._build_command(_, query, context)
   table.insert(cmd, "build")
   table.insert(cmd, "--title")
   table.insert(cmd, "[99.nvim]")
+  table.insert(cmd, "--format")
+  table.insert(cmd, "json")
   table.insert(cmd, "-m")
   table.insert(cmd, context.model)
   table.insert(cmd, query)
   return cmd
+end
+
+--- opencode --format json emits newline-delimited events.  Completed
+--- assistant text parts arrive as {type="text", part={text=...}}; the last
+--- one is the final response message.
+---
+--- @param _ self
+--- @param stdout_text string | nil
+--- @return string | nil
+function OpenCodeProvider._extract_response(_, stdout_text)
+  if not stdout_text then
+    return nil
+  end
+
+  local last_text = nil
+  for _, line in ipairs(vim.split(stdout_text, "\n", { trimempty = true })) do
+    local ok, ev = pcall(vim.json.decode, line)
+    if ok and type(ev) == "table" and ev.type == "text" then
+      local part = ev.part
+      if type(part) == "table" and type(part.text) == "string" then
+        if vim.trim(part.text) ~= "" then
+          last_text = part.text
+        end
+      end
+    end
+  end
+  return last_text
 end
 
 --- @return boolean

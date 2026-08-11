@@ -208,7 +208,7 @@ local _99_state
 --- get to see the logs.
 --- @field stop_all_requests fun(): nil
 --- stops all in flight requests.  this means that the underlying process will
---- be killed (OpenCode) and any result will be discared
+--- be killed (OpenCode) and any result will be discarded
 --- @field clear_previous_requests fun(): nil
 --- clears all previous search and visual operations
 --- @field Extensions _99.Extensions
@@ -356,10 +356,13 @@ function _99.tutorial(opts)
 end
 
 --- @param opts _99.ops.Opts?
---- @return _99.TraceID
+--- @return _99.TraceID | nil
 function _99.visual(opts)
   opts = process_opts(opts)
   local context = Prompt.visual(_99_state)
+  if context == nil then
+    return nil
+  end
   if opts.additional_prompt then
     context.user_prompt = opts.additional_prompt
     ops.over_range(context, opts)
@@ -425,6 +428,7 @@ function _99.setup(opts)
     callback = function()
       _99.stop_all_requests()
       _99_state:sync()
+      Logger:flush()
     end,
   })
 

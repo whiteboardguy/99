@@ -30,7 +30,9 @@ end
 --- @param dir string
 --- @return string
 function M.random_file(dir)
-  return string.format("%s/99-%d", dir, math.floor(math.random() * 10000))
+  --- hrtime is monotonic and unique per nvim instance, so concurrent
+  --- requests can never collide (the old math.random * 10000 space could)
+  return string.format("%s/99-%d", dir, vim.uv.hrtime())
 end
 
 --- @param dir string

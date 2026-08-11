@@ -46,6 +46,11 @@ local function tutorial(context, opts)
         "error response",
         response or "no response provided"
       )
+      vim.notify(
+        "[99] tutorial request failed: "
+          .. (response or "no response provided"):sub(1, 300),
+        vim.log.levels.ERROR
+      )
     elseif status == "success" then
       open_tutorial(context, response)
       context._99:sync()

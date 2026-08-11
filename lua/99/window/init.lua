@@ -247,7 +247,7 @@ end
 --- @param lines string[]
 function M.display_full_screen_message(lines)
   --- TODO: i really dislike that i am closing and opening windows
-  --- i think it would be better to perserve the one that is already open
+  --- i think it would be better to preserve the one that is already open
   --- but i just want this to work and then later... ohh much later, ill fix
   --- this basic nonsense
   M.clear_active_popups()
@@ -280,7 +280,7 @@ end
 
 --- @param win _99.window.Window
 --- @param name string
-local function set_defaul_win_options(win, name)
+local function set_default_win_options(win, name)
   vim.api.nvim_buf_set_name(win.buf_id, name)
   vim.wo[win.win_id].number = true
   vim.bo[win.buf_id].filetype = "99"
@@ -342,10 +342,24 @@ local function highlight_rules_found(win, rules, group)
     end
   end
 
+  --- debounce the per-keystroke highlight pass (full buffer scan + extmarks)
+  local highlight_timer = vim.uv.new_timer()
+  local function schedule_highlight()
+    highlight_timer:stop()
+    highlight_timer:start(
+      100,
+      0,
+      vim.schedule_wrap(function()
+        check_and_highlight_rules()
+      end)
+    )
+  end
+
   vim.api.nvim_create_autocmd("InsertLeave", {
     group = group,
     buffer = win.buf_id,
     callback = function()
+      highlight_timer:stop()
       check_and_highlight_rules()
     end,
   })
@@ -354,7 +368,15 @@ local function highlight_rules_found(win, rules, group)
     group = group,
     buffer = win.buf_id,
     callback = function()
-      check_and_highlight_rules()
+      schedule_highlight()
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("BufUnload", {
+    group = group,
+    buffer = win.buf_id,
+    callback = function()
+      highlight_timer:stop()
     end,
   })
 end
@@ -465,7 +487,7 @@ function M.capture_input(name, opts)
     create_floating_window(config, string.format(" 99 %s ", name), true)
   win.type = "capture_input"
 
-  set_defaul_win_options(win, "99-prompt")
+  set_default_win_options(win, "99-prompt")
   vim.api.nvim_set_current_win(win.win_id)
 
   opts.keymap = opts.keymap or {}
