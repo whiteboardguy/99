@@ -4,6 +4,7 @@ local M = {}
 --- @class _99.Providers.PartialObserver
 --- @field on_complete _99.Providers.on_complete
 --- @field on_stdout? fun(line: string): nil
+--- @field on_stdout_line? fun(line: string): nil
 --- @field on_stderr? fun(line: string): nil
 --- @field on_start? fun(): nil
 
@@ -37,6 +38,11 @@ M.make_observer = function(context, obs_or_fn)
     on_stdout = function(line)
       if obs.on_stdout then
         obs.on_stdout(line)
+      end
+    end,
+    on_stdout_line = function(line)
+      if obs.on_stdout_line then
+        obs.on_stdout_line(line)
       end
     end,
   } --[[@as _99.Providers.Observer ]]

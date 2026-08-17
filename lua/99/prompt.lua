@@ -276,6 +276,11 @@ function Prompt:_observer(obs)
         obs.on_stdout(line)
       end
     end,
+    on_stdout_line = function(line)
+      if obs and obs.on_stdout_line then
+        obs.on_stdout_line(line)
+      end
+    end,
   }
 end
 

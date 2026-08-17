@@ -64,7 +64,8 @@ local function rejection_reason(response, range)
   )
   if #lines > limit then
     return string.format(
-      "response has %d lines but the selection is only %d line(s); refusing to replace with what looks like a whole-file rewrite",
+      "response has %d lines but the selection is only %d line(s); "
+        .. "refusing to replace with what looks like a whole-file rewrite",
       #lines,
       selection_lines
     )
@@ -171,7 +172,13 @@ local function over_range(context, opts)
             "[99] visual replacement rejected: " .. reason,
             vim.log.levels.WARN
           )
-          logger:error("visual replacement rejected", "reason", reason)
+          logger:error(
+            "visual replacement rejected",
+            "reason",
+            reason,
+            "response",
+            response:sub(1, 1000)
+          )
           return
         end
 
@@ -196,12 +203,12 @@ local function over_range(context, opts)
         context._99:sync()
       end
     end,
-    on_stdout = function(line)
+    -- formatted per-line display: opencode json events arrive here as their
+    -- human payload (text part, tool call, error) instead of the raw
+    -- "type/step_start/sessionID" envelope
+    on_stdout_line = function(line)
       if display_ai_status then
-        local text = vim.trim(line)
-        if text ~= "" then
-          top_status:push("ai> " .. text)
-        end
+        top_status:push("ai> " .. line)
       end
     end,
   }))

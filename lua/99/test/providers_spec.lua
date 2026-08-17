@@ -311,9 +311,12 @@ opencode/claude-sonnet-4-5 - duplicate
       function()
         local stdout = table.concat({
           '{"type":"step_start","timestamp":1,"sessionID":"s1","part":{"type":"step-start"}}',
-          '{"type":"tool_use","timestamp":2,"sessionID":"s1","part":{"type":"tool","tool":"bash","state":{"status":"completed"}}}',
-          '{"type":"text","timestamp":3,"sessionID":"s1","part":{"type":"text","text":"first draft","time":{"end":123}}}',
-          '{"type":"text","timestamp":4,"sessionID":"s1","part":{"type":"text","text":"  final answer  ","time":{"end":124}}}',
+          '{"type":"tool_use","timestamp":2,"sessionID":"s1","part":{"type":"tool",'
+            .. '"tool":"bash","state":{"status":"completed"}}}',
+          '{"type":"text","timestamp":3,"sessionID":"s1","part":{"type":"text",'
+            .. '"text":"first draft","time":{"end":123}}}',
+          '{"type":"text","timestamp":4,"sessionID":"s1","part":{"type":"text",'
+            .. '"text":"  final answer  ","time":{"end":124}}}',
         }, "\n")
 
         eq(
@@ -341,5 +344,399 @@ opencode/claude-sonnet-4-5 - duplicate
       eq("hello", Providers.BaseProvider:_extract_response("  hello  "))
       eq(nil, Providers.BaseProvider:_extract_response("   "))
     end)
+
+    it(
+      "extracts text from message.part.updated events (newer stream shapes)",
+      function()
+        local stdout = table.concat({
+          '{"type":"message.part.updated","part":{"type":"text","text":"draft"}}',
+          '{"type":"message.part.updated","part":{"type":"text","text":"final answer"}}',
+        }, "\n")
+        eq(
+          "final answer",
+          Providers.OpenCodeProvider._extract_response(nil, stdout)
+        )
+      end
+    )
+
+    it("still returns nil when only step/tool/error events exist", function()
+      local stdout = table.concat({
+        '{"type":"step_start","part":{"type":"step-start"}}',
+        '{"type":"error","error":{"data":{"message":"Failed query"}}}',
+      }, "\n")
+      eq(nil, Providers.OpenCodeProvider._extract_response(nil, stdout))
+    end)
+  end)
+
+  describe("_stdout_line_to_display", function()
+    it("hides step_start envelopes", function()
+      eq(
+        nil,
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"step_start","timestamp":1,"sessionID":"s1","part":{"type":"step-start"}}'
+        )
+      )
+    end)
+
+    it("renders text parts as their payload", function()
+      eq(
+        "hello there",
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"text","timestamp":1,"sessionID":"s1","part":{"type":"text","text":"hello there"}}'
+        )
+      )
+    end)
+
+    it("renders message.part.updated text too", function()
+      eq(
+        "live text",
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"message.part.updated","part":{"type":"text","text":"live text"}}'
+        )
+      )
+    end)
+
+    it("renders tool_use as a tool line", function()
+      eq(
+        "tool: bash",
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"running"}}}'
+        )
+      )
+    end)
+
+    it("renders error events with their message", function()
+      eq(
+        "error: Unexpected server error. Check server logs for details.",
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"error","error":{"name":"UnknownError","data":{"message":'
+            .. '"Unexpected server error. Check server logs for details.",'
+            .. '"ref":"err_37aeaf83"}}}'
+        )
+      )
+    end)
+
+    it("renders session.error only when it carries a message", function()
+      eq(
+        nil,
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"session.error","error":{}}'
+        )
+      )
+      eq(
+        "error: boom",
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"session.error","error":{"message":"boom"}}'
+        )
+      )
+    end)
+
+    it("passes non-json lines through untouched", function()
+      eq(
+        "plain text line",
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          "  plain text line  "
+        )
+      )
+    end)
+
+    it("hides blank lines", function()
+      eq(nil, Providers.OpenCodeProvider._stdout_line_to_display(nil, ""))
+      eq(nil, Providers.OpenCodeProvider._stdout_line_to_display(nil, "   "))
+    end)
+
+    it("truncates long text parts", function()
+      local long = string.rep("a", 500)
+      local out = Providers.OpenCodeProvider._stdout_line_to_display(
+        nil,
+        '{"type":"text","part":{"type":"text","text":"' .. long .. '"}}'
+      )
+      assert.is_true(out ~= nil)
+      assert.is_true(#out < #long)
+      eq(string.rep("a", 160) .. " …", out)
+    end)
+  end)
+
+  describe("no-session-persistence probe", function()
+    local original_system
+
+    before_each(function()
+      original_system = vim.system
+      Providers.OpenCodeProvider._reset_no_session_persistence_probe()
+    end)
+
+    after_each(function()
+      vim.system = original_system
+      Providers.OpenCodeProvider._reset_no_session_persistence_probe()
+    end)
+
+    it("caches true when opencode run --help lists the flag", function()
+      local received
+      vim.system = function(cmd, _, cb)
+        eq("opencode", cmd[1])
+        eq("run", cmd[2])
+        cb({
+          code = 0,
+          stdout = "opencode run [options]\n  --no-session-persistence   do not persist the session\n",
+          stderr = "",
+        })
+      end
+
+      Providers.OpenCodeProvider._probe_no_session_persistence(
+        function(supported)
+          received = supported
+        end
+      )
+      vim.wait(2000, function()
+        return received ~= nil
+      end)
+      eq(true, received)
+
+      --- cached: a second call resolves immediately with the same answer
+      local second
+      Providers.OpenCodeProvider._probe_no_session_persistence(
+        function(supported)
+          second = supported
+        end
+      )
+      eq(true, second)
+    end)
+
+    it("caches false when the flag is absent", function()
+      local received
+      vim.system = function(_, _, cb)
+        cb({
+          code = 0,
+          stdout = "opencode run [options]\n  --agent <name>\n",
+          stderr = "",
+        })
+      end
+
+      Providers.OpenCodeProvider._probe_no_session_persistence(
+        function(supported)
+          received = supported
+        end
+      )
+      vim.wait(2000, function()
+        return received ~= nil
+      end)
+      eq(false, received)
+    end)
+
+    it("caches false when the help command fails", function()
+      local received
+      vim.system = function(_, _, cb)
+        cb({ code = 1, stdout = "", stderr = "" })
+      end
+
+      Providers.OpenCodeProvider._probe_no_session_persistence(
+        function(supported)
+          received = supported
+        end
+      )
+      vim.wait(2000, function()
+        return received ~= nil
+      end)
+      eq(false, received)
+    end)
+  end)
+
+  describe("make_request retry", function()
+    local original_system
+    local original_support
+
+    before_each(function()
+      original_system = vim.system
+      original_support =
+        Providers.OpenCodeProvider._supports_no_session_persistence
+      --- keep _build_command from running the real probe against opencode
+      Providers.OpenCodeProvider._supports_no_session_persistence = function()
+        return false
+      end
+    end)
+
+    after_each(function()
+      vim.system = original_system
+      Providers.OpenCodeProvider._supports_no_session_persistence =
+        original_support
+    end)
+
+    --- drives make_request against stubbed opencode runs.  branches[key]
+    --- is the response of the (key)-th `opencode run` invocation.
+    ---
+    --- @param branches table<number, {code: number, stdout: string}>
+    --- @return table
+    local function run_request(branches)
+      local calls = 0
+      local done = false
+      local results = {}
+      local display_lines = {}
+      vim.system = function(cmd, opts, cb)
+        if cmd[1] == "opencode" and cmd[2] == "session" then
+          --- session cleanup from the request completion
+          cb({ code = 0, stdout = "", stderr = "" })
+          return
+        end
+        calls = calls + 1
+        local branch = branches[calls]
+        --- feed stdout either as one chunk or as fragmented chunks that
+        --- split json events mid-line, like real process pipes do
+        local fragments = branch.fragments or { branch.stdout }
+        for i = 1, #fragments do
+          if opts.stdout and fragments[i] then
+            opts.stdout(nil, fragments[i])
+          end
+        end
+        cb({
+          code = branch.code,
+          signal = 0,
+          stdout = branch.stdout or "",
+          stderr = branch.stderr or "",
+        })
+      end
+
+      local tmp = vim.fn.tempname()
+      local f = io.open(tmp, "w")
+      if f then
+        f:close()
+      end
+
+      --- FATAL so debug/warn lines never hit the logger's arg-count assert
+      local logger = require("99.logger.logger"):set_id(1234)
+      logger.level = require("99.logger.level").FATAL
+      local context = {
+        logger = logger,
+        tmp_file = tmp,
+        _99 = nil,
+        is_cancelled = function()
+          return false
+        end,
+        _set_process = function() end,
+      }
+      local observer = {
+        on_start = function() end,
+        on_complete = function(status, res)
+          done = true
+          table.insert(results, { status, res })
+        end,
+        on_stdout = function() end,
+        on_stdout_line = function(line)
+          table.insert(display_lines, line)
+        end,
+        on_stderr = function() end,
+      }
+      return {
+        calls = function()
+          return calls
+        end,
+        results = results,
+        display = display_lines,
+        context = context,
+        observer = observer,
+        wait = function()
+          vim.wait(2000, function()
+            return done
+          end)
+        end,
+      }
+    end
+
+    it(
+      "retries once when opencode dies at step start with a persistence error",
+      function()
+        local r = run_request({
+          {
+            code = 1,
+            stdout = '{"type":"error","error":{"name":"UnknownError","data":{"message":'
+              .. '"Failed query: insert into \\"part\\" values (...)",'
+              .. '"ref":"err_1"}}}',
+          },
+          {
+            code = 0,
+            stdout = '{"type":"text","part":{"type":"text","text":"the answer"}}',
+          },
+        })
+
+        Providers.OpenCodeProvider:make_request("q", r.context, r.observer)
+        r.wait()
+
+        eq(2, r.calls())
+        eq(1, #r.results)
+        eq("success", r.results[1][1])
+        eq("the answer", r.results[1][2])
+      end
+    )
+
+    it(
+      "does not retry when the agent had already started (tool_use seen)",
+      function()
+        local r = run_request({
+          {
+            code = 1,
+            stdout = '{"type":"tool_use","part":{"type":"tool","tool":"bash"}}'
+              .. '\n{"type":"error","error":{"data":{"message":"Failed query"}}}',
+          },
+        })
+
+        Providers.OpenCodeProvider:make_request("q", r.context, r.observer)
+        r.wait()
+
+        eq(1, r.calls())
+        eq(1, #r.results)
+        eq("failed", r.results[1][1])
+      end
+    )
+
+    it("does not retry generic failures", function()
+      local r = run_request({
+        { code = 1, stdout = "boom" },
+      })
+
+      Providers.OpenCodeProvider:make_request("q", r.context, r.observer)
+      r.wait()
+
+      eq(1, r.calls())
+      eq(1, #r.results)
+      eq("failed", r.results[1][1])
+    end)
+
+    it(
+      "renders clean display lines when chunks split json events mid-line",
+      function()
+        local r = run_request({
+          {
+            code = 0,
+            --- chunk boundaries cut through events on purpose: only whole,
+            --- formatted lines may reach the status area
+            fragments = {
+              '{"type":"step_start","part":{"type":"step-start"}}\n'
+                .. '{"type":"message.part.updated","part":{"type":"te',
+              'xt","text":"thinking out loud..."}}\n'
+                .. '{"type":"tool_use","part":{"type":"tool","tool":"bash"}}',
+              '\n{"type":"text","part":{"type":"text","text":"the answer"}}\n',
+            },
+          },
+        })
+
+        Providers.OpenCodeProvider:make_request("q", r.context, r.observer)
+        r.wait()
+
+        eq({ "thinking out loud...", "tool: bash", "the answer" }, r.display)
+        --- no raw json envelope fragments ever reach the display
+        for _, line in ipairs(r.display) do
+          assert.is_nil(line:find('{"', 1, true))
+        end
+        eq("success", r.results[1][1])
+        eq("the answer", r.results[1][2])
+      end
+    )
   end)
 end)

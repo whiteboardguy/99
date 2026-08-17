@@ -1,5 +1,6 @@
 --- @class _99.Providers.Observer
---- @field on_stdout fun(line: string): nil
+--- @field on_stdout fun(line: string): nil raw stdout chunk, verbatim
+--- @field on_stdout_line? fun(line: string): nil formatted single line for display
 --- @field on_stderr fun(line: string): nil
 --- @field on_complete fun(status: _99.Prompt.EndingState, res: string): nil
 --- @field on_start fun(): nil
@@ -22,7 +23,73 @@ end
 --- @field _get_provider_name fun(self: _99.Providers.BaseProvider): string
 --- @field _get_default_model fun(): string
 local BaseProvider = {}
+
+--- opencode --format json emits newline-delimited events.  a running
+--- assistant message surfaces as part.text on several event types (text,
+--- message.part.updated, ...), so text extraction is type-agnostic and takes
+--- the LAST non-empty payload as the final response.
+---
+--- @param ev any decoded event
+--- @return string | nil
+local function text_from_event(ev)
+  if type(ev) ~= "table" then
+    return nil
+  end
+  local part = ev.part
+  if type(part) == "table" and type(part.text) == "string" then
+    if vim.trim(part.text) ~= "" then
+      return part.text
+    end
+  end
+  return nil
+end
+
+--- the human-readable message of an event error.  both
+--- {"type":"error","error":{"message":...}} and
+--- {"type":"error","error":{"data":{"message":...}}} appear in the
+--- wild.
+---
+--- @param ev any decoded event
+--- @return string | nil
+local function error_from_event(ev)
+  if type(ev) ~= "table" then
+    return nil
+  end
+  local err = ev.error
+  if type(err) == "string" then
+    return err
+  end
+  if type(err) == "table" then
+    if type(err.message) == "string" then
+      return err.message
+    end
+    local data = err.data
+    if type(data) == "table" and type(data.message) == "string" then
+      return data.message
+    end
+  end
+  return nil
+end
+
+--- status-area lines must stay short: the visible region is only a couple of
+--- rows tall and a full text part would drown it out
+local STATUS_TEXT_MAX = 160
+
+--- @param text string
+--- @return string
+local function truncate_status(text)
+  if #text <= STATUS_TEXT_MAX then
+    return text
+  end
+  return text:sub(1, STATUS_TEXT_MAX) .. " …"
+end
+
+--- whether the installed opencode supports `--no-session-persistence`
+--- (nil = unknown, false = unsupported, true = supported)
 local opencode_no_session_support
+local opencode_probe_started = false
+--- @type (fun(supported: boolean): nil)[] | nil
+local pending_probe_callbacks
 
 --- session cleanup spawns `opencode session list` + one delete per session;
 --- debounce it so we do not spawn a process tree after every single request
@@ -132,11 +199,26 @@ end
 
 --- @param stdout_text string | nil
 --- @return string | nil
-function BaseProvider:_extract_response(stdout_text)
+function BaseProvider._extract_response(_, stdout_text)
   if not stdout_text or vim.trim(stdout_text) == "" then
     return nil
   end
   return vim.trim(stdout_text)
+end
+
+--- Turn one raw stdout line into the text shown in the status area.
+--- Providers override this to render their machine-readable output; the
+--- default treats output as already human-readable.
+---
+--- @param _ self
+--- @param line string
+--- @return string | nil nil hides the line entirely
+function BaseProvider._stdout_line_to_display(_, line)
+  local trimmed = vim.trim(line or "")
+  if trimmed == "" then
+    return nil
+  end
+  return trimmed
 end
 
 --- @param query string
@@ -148,118 +230,200 @@ function BaseProvider:make_request(query, context, observer)
   local logger = context.logger:set_area(self:_get_provider_name())
   logger:debug("make_request", "tmp_file", context.tmp_file)
 
-  local once_complete = once(
-    --- @param status "success" | "failed" | "cancelled"
-    ---@param text string
-    function(status, text)
-      observer.on_complete(status, text)
+  --- opencode's persistence layer occasionally dies mid-run ("Failed query:
+  --- insert into \"part\" ...", UnknownError) before the agent does any
+  --- work.  retry once ONLY for that signature: no tool_use in the stream
+  --- proves the agent never ran, so re-running cannot double-apply edits.
+  local MAX_ATTEMPTS = 2
+  local attempts = 0
+
+  --- @param stdout_text string
+  --- @return boolean
+  local function should_retry(stdout_text)
+    if attempts >= MAX_ATTEMPTS then
+      return false
     end
-  )
+    if self:_get_provider_name() ~= "OpenCodeProvider" then
+      return false
+    end
+    if not stdout_text or stdout_text == "" then
+      return false
+    end
+    local persistence_error = stdout_text:find("Failed query", 1, true)
+      or stdout_text:find("UnknownError", 1, true)
+    if not persistence_error then
+      return false
+    end
+    --- the agent may have been mid-flight when the server fell over; only
+    --- retry when it demonstrably had not started
+    if stdout_text:find('"tool_use"', 1, true) then
+      return false
+    end
+    return true
+  end
 
-  local command = self:_build_command(query, context)
-  local extra_args = context._99 and context._99.provider_extra_args or {}
-  add_args_before_prompt(command, extra_args)
-  logger:debug("make_request", "command", command)
-  local stdout_chunks = {}
-  local stderr_chunks = {}
+  --- @type fun(): nil
+  local run
+  run = function()
+    attempts = attempts + 1
 
-  local proc = vim.system(
-    command,
-    {
-      text = true,
-      stdout = vim.schedule_wrap(function(err, data)
-        logger:debug("stdout", "data", data)
-        if context:is_cancelled() then
-          once_complete("cancelled", "")
-          return
-        end
-        if err and err ~= "" then
-          logger:debug("stdout#error", "err", err)
-        end
-        if not err and data then
-          table.insert(stdout_chunks, data)
-          observer.on_stdout(data)
-        end
-      end),
-      stderr = vim.schedule_wrap(function(err, data)
-        logger:debug("stderr", "data", data)
-        if context:is_cancelled() then
-          once_complete("cancelled", "")
-          return
-        end
-        if err and err ~= "" then
-          logger:debug("stderr#error", "err", err)
-        end
-        if not err and data then
-          table.insert(stderr_chunks, data)
-          observer.on_stderr(data)
-        end
-      end),
-    },
-    vim.schedule_wrap(function(obj)
-      if context:is_cancelled() then
-        once_complete("cancelled", "")
-        logger:debug("on_complete: request has been cancelled")
+    local once_complete = once(
+      --- @param status "success" | "failed" | "cancelled"
+      ---@param text string
+      function(status, text)
+        observer.on_complete(status, text)
+      end
+    )
+
+    local command = self:_build_command(query, context)
+    local extra_args = context._99 and context._99.provider_extra_args or {}
+    add_args_before_prompt(command, extra_args)
+    logger:debug("make_request", "command", command)
+    local stdout_chunks = {}
+    local stderr_chunks = {}
+
+    --- vim.system chunks can split a JSON event mid-line; buffer the
+    --- incomplete trailing segment instead of dumping fragments into the
+    --- status area
+    local display_pending = ""
+    local function flush_display_pending()
+      if display_pending == "" or not observer.on_stdout_line then
         return
       end
-      if obj.code ~= 0 then
-        local stderr_text = vim.trim(table.concat(stderr_chunks, "\n"))
-        local stdout_text = vim.trim(table.concat(stdout_chunks, "\n"))
-        local str = string.format(
-          "process exit code: %d\nsignal: %s\nstderr:\n%s\nstdout:\n%s",
-          obj.code,
-          tostring(obj.signal),
-          stderr_text ~= "" and stderr_text or "(empty)",
-          stdout_text ~= "" and stdout_text or "(empty)"
-        )
-        once_complete("failed", str)
-        logger:error(
-          self:_get_provider_name() .. " make_query failed",
-          "error",
-          str,
-          "obj from results",
-          obj
-        )
-      else
-        vim.schedule(function()
-          local ok, res = self:_retrieve_response(context)
-          if ok and res ~= nil and vim.trim(res) ~= "" then
-            once_complete("success", res)
-          else
-            --- fallback: some agents never write the temp file (permission
-            --- denials, cwd outside the project root, or they answer in text
-            --- instead).  the final text response is on stdout, so try that.
-            local stdout_text = table.concat(stdout_chunks, "\n")
-            local extracted = self:_extract_response(stdout_text)
-            if extracted and vim.trim(extracted) ~= "" then
-              logger:debug("retrieve_results", "using stdout fallback")
-              once_complete("success", extracted)
-            elseif ok then
-              once_complete(
-                "failed",
-                "no response: the agent neither wrote "
-                  .. context.tmp_file
-                  .. " nor produced a text response"
-              )
-            else
-              once_complete(
-                "failed",
-                "unable to retrieve response from temp file"
-              )
+      local display = self:_stdout_line_to_display(display_pending)
+      if display then
+        observer.on_stdout_line(display)
+      end
+      display_pending = ""
+    end
+
+    local proc = vim.system(
+      command,
+      {
+        text = true,
+        stdout = vim.schedule_wrap(function(err, data)
+          logger:debug("stdout", "data", data)
+          if context:is_cancelled() then
+            once_complete("cancelled", "")
+            return
+          end
+          if err and err ~= "" then
+            logger:debug("stdout#error", "err", err)
+          end
+          if not err and data then
+            table.insert(stdout_chunks, data)
+            observer.on_stdout(data)
+            if observer.on_stdout_line then
+              display_pending = display_pending .. data
+              local lines =
+                vim.split(display_pending, "\n", { trimempty = false })
+              display_pending = table.remove(lines) or ""
+              for _, line in ipairs(lines) do
+                local display = self:_stdout_line_to_display(line)
+                if display then
+                  observer.on_stdout_line(display)
+                end
+              end
             end
           end
-          if self:_get_provider_name() == "OpenCodeProvider" then
-            cleanup_99_opencode_sessions(logger)
+        end),
+        stderr = vim.schedule_wrap(function(err, data)
+          logger:debug("stderr", "data", data)
+          if context:is_cancelled() then
+            once_complete("cancelled", "")
+            return
           end
-        end)
-      end
-      if obj.code ~= 0 and self:_get_provider_name() == "OpenCodeProvider" then
-        cleanup_99_opencode_sessions(logger)
-      end
-    end)
-  )
+          if err and err ~= "" then
+            logger:debug("stderr#error", "err", err)
+          end
+          if not err and data then
+            table.insert(stderr_chunks, data)
+            observer.on_stderr(data)
+          end
+        end),
+      },
+      vim.schedule_wrap(function(obj)
+        if context:is_cancelled() then
+          once_complete("cancelled", "")
+          logger:debug("on_complete: request has been cancelled")
+          return
+        end
+        if obj.code ~= 0 then
+          local stderr_text = vim.trim(table.concat(stderr_chunks, "\n"))
+          local stdout_text = vim.trim(table.concat(stdout_chunks, "\n"))
+          local str = string.format(
+            "process exit code: %d\nsignal: %s\nstderr:\n%s\nstdout:\n%s",
+            obj.code,
+            tostring(obj.signal),
+            stderr_text ~= "" and stderr_text or "(empty)",
+            stdout_text ~= "" and stdout_text or "(empty)"
+          )
+          flush_display_pending()
+          if should_retry(stdout_text) then
+            logger:warn(
+              self:_get_provider_name() .. " run aborted before doing work",
+              "attempt",
+              attempts,
+              "retrying",
+              true
+            )
+            run()
+            return
+          end
+          once_complete("failed", str)
+          logger:error(
+            self:_get_provider_name() .. " make_query failed",
+            "error",
+            str,
+            "obj from results",
+            obj
+          )
+        else
+          vim.schedule(function()
+            local ok, res = self:_retrieve_response(context)
+            if ok and res ~= nil and vim.trim(res) ~= "" then
+              once_complete("success", res)
+            else
+              --- fallback: some agents never write the temp file (permission
+              --- denials, cwd outside the project root, or they answer in text
+              --- instead).  the final text response is on stdout, so try that.
+              local stdout_text = table.concat(stdout_chunks, "\n")
+              local extracted = self:_extract_response(stdout_text)
+              if extracted and vim.trim(extracted) ~= "" then
+                logger:debug("retrieve_results: using stdout fallback")
+                once_complete("success", extracted)
+              elseif ok then
+                once_complete(
+                  "failed",
+                  "no response: the agent neither wrote "
+                    .. context.tmp_file
+                    .. " nor produced a text response"
+                )
+              else
+                once_complete(
+                  "failed",
+                  "unable to retrieve response from temp file"
+                )
+              end
+            end
+            flush_display_pending()
+            if self:_get_provider_name() == "OpenCodeProvider" then
+              cleanup_99_opencode_sessions(logger)
+            end
+          end)
+        end
+        if
+          obj.code ~= 0 and self:_get_provider_name() == "OpenCodeProvider"
+        then
+          cleanup_99_opencode_sessions(logger)
+        end
+      end)
+    )
 
-  context:_set_process(proc)
+    context:_set_process(proc)
+  end
+
+  run()
 end
 
 --- @class OpenCodeProvider : _99.Providers.BaseProvider
@@ -299,7 +463,9 @@ end
 
 --- opencode --format json emits newline-delimited events.  Completed
 --- assistant text parts arrive as {type="text", part={text=...}}; the last
---- one is the final response message.
+--- one is the final response message.  newer servers also stream live text
+--- under message.part.updated (same part.text payload), so extraction takes
+--- the last non-empty text payload of any event type.
 ---
 --- @param _ self
 --- @param stdout_text string | nil
@@ -312,16 +478,99 @@ function OpenCodeProvider._extract_response(_, stdout_text)
   local last_text = nil
   for _, line in ipairs(vim.split(stdout_text, "\n", { trimempty = true })) do
     local ok, ev = pcall(vim.json.decode, line)
-    if ok and type(ev) == "table" and ev.type == "text" then
-      local part = ev.part
-      if type(part) == "table" and type(part.text) == "string" then
-        if vim.trim(part.text) ~= "" then
-          last_text = part.text
-        end
+    if ok then
+      local text = text_from_event(ev)
+      if text then
+        last_text = text
       end
     end
   end
   return last_text
+end
+
+--- Map a raw stdout line to the text shown in the status area.  JSON events
+--- render as their meaningful payload (text part, tool call, error message)
+--- instead of the raw envelope; non-JSON lines pass through untouched so
+--- plain-text providers keep working.
+---
+--- @param _ self
+--- @param line string
+--- @return string | nil
+function OpenCodeProvider._stdout_line_to_display(_, line)
+  local trimmed = vim.trim(line or "")
+  if trimmed == "" then
+    return nil
+  end
+
+  local ok, ev = pcall(vim.json.decode, line)
+  if not ok or type(ev) ~= "table" then
+    return trimmed
+  end
+
+  local text = text_from_event(ev)
+  if text then
+    return truncate_status(text)
+  end
+
+  if ev.type == "tool_use" or ev.type == "tool" then
+    local part = ev.part
+    if type(part) == "table" and type(part.tool) == "string" then
+      return "tool: " .. part.tool
+    end
+    return "tool"
+  end
+
+  local err = error_from_event(ev)
+  if err then
+    if ev.type == "error" or ev.type == "session.error" then
+      return "error: " .. truncate_status(err)
+    end
+  end
+
+  --- step_start / step_finish / message / snapshot / ... carry no
+  --- user-visible content worth a status row
+  return nil
+end
+
+--- Ask the installed opencode whether `opencode run` accepts
+--- --no-session-persistence, once per nvim session, then cache the answer.
+--- Stubbed out in tests; callers that need an immediate answer while the
+--- probe is in flight get the conservative `false`.
+---
+--- @param callback fun(supported: boolean): nil
+function OpenCodeProvider._probe_no_session_persistence(callback)
+  if opencode_no_session_support ~= nil then
+    callback(opencode_no_session_support)
+    return
+  end
+
+  if opencode_probe_started then
+    pending_probe_callbacks = pending_probe_callbacks or {}
+    table.insert(pending_probe_callbacks, callback)
+    return
+  end
+  opencode_probe_started = true
+  pending_probe_callbacks = { callback }
+
+  vim.system({ "opencode", "run", "--help" }, { text = true }, function(obj)
+    vim.schedule(function()
+      opencode_no_session_support = obj.code == 0
+        and (obj.stdout or ""):find("--no-session-persistence", 1, true)
+          ~= nil
+      local callbacks = pending_probe_callbacks or {}
+      pending_probe_callbacks = nil
+      for _, cb in ipairs(callbacks) do
+        cb(opencode_no_session_support)
+      end
+    end)
+  end)
+end
+
+--- TEST ONLY: clear the probe cache so specs can exercise both branches
+function OpenCodeProvider._reset_no_session_persistence_probe()
+  opencode_no_session_support = nil
+  opencode_probe_started = false
+  pending_probe_callbacks = nil
 end
 
 --- @return boolean
@@ -329,6 +578,9 @@ function OpenCodeProvider._supports_no_session_persistence()
   if opencode_no_session_support ~= nil then
     return opencode_no_session_support
   end
+  --- kick the probe on first use; until it resolves, stay conservative
+  --- (no flag), the debounced session cleanup covers that interim
+  OpenCodeProvider._probe_no_session_persistence(function() end)
   return false
 end
 

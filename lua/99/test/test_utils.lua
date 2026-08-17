@@ -73,6 +73,12 @@ end
 function TestProvider:stdout(line)
   assert(self.request, "you cannot call stdout until make_request is called")
   self.request.observer.on_stdout(line)
+  if self.request.observer.on_stdout_line then
+    local display = self:_stdout_line_to_display(line)
+    if display then
+      self.request.observer.on_stdout_line(display)
+    end
+  end
 end
 
 --- @param line string
