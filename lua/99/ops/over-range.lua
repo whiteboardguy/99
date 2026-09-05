@@ -10,6 +10,24 @@ local make_observer = CleanUp.make_observer
 local Range = geo.Range
 local Point = geo.Point
 
+--- Drop duplicate reference contents (first copy wins).  the same skill
+--- or file can arrive twice: once via #name matching, once via @path
+--- resolution.  models pay per token for both.
+---
+--- @param refs _99.Reference[]
+--- @return _99.Reference[]
+local function dedupe_refs(refs)
+  local seen = {}
+  local out = {}
+  for _, ref in ipairs(refs) do
+    if not seen[ref.content] then
+      seen[ref.content] = true
+      table.insert(out, ref)
+    end
+  end
+  return out
+end
+
 --- response size guard: a replacement may be at most this many times the
 --- selection's line count (plus slack) before we treat it as a whole-file
 --- rewrite and refuse to apply it.  kept generous: legit skeleton
@@ -129,8 +147,14 @@ local function over_range(context, opts)
   local prompt, refs = make_prompt(context, system_cmd, opts)
 
   context:add_prompt_content(prompt)
-  context:add_references(refs)
+  context:add_references(dedupe_refs(refs))
   context:add_clean_up(clean_up)
+
+  local prompt_chars = 0
+  for _, part in ipairs(context:content()) do
+    prompt_chars = prompt_chars + #part
+  end
+  logger:debug("visual prompt assembled", "chars", prompt_chars)
 
   if display_ai_status then
     top_status:push("selection: " .. range:to_string())

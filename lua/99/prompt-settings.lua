@@ -147,9 +147,7 @@ ONLY provide requested changes by writing the change to TEMP_FILE
     local selection_lines = #vim.split(range:to_text(), "\n")
     return string.format(
       [[
-You receive a selection in neovim that you need to replace with new code.
-The selection's contents may contain notes, incorporate the notes every time if there are some.
-consider the context of the selection and what you are suppose to be implementing
+Replace this neovim selection with new code.
 <SELECTION_LOCATION>
 %s
 </SELECTION_LOCATION>
@@ -160,11 +158,11 @@ consider the context of the selection and what you are suppose to be implementin
 %s
 </SURROUNDING_CONTEXT>
 <Rules>
-The selection is %d line(s) long.
-TEMP_FILE must contain EXACTLY the replacement code for the selection and nothing else.
-Never write the whole file.  Never repeat unchanged code.  Never include commentary or markdown code fences.
-Only output the code that should take the place of the selection.
-If you cannot write TEMP_FILE, put the replacement code in your final message instead.
+- Honor notes inside the selection.
+- TEMP_FILE holds EXACTLY the replacement span (%d line(s), grow only as
+  needed): no whole file, no unchanged code, no commentary, no fences.
+- Write ONLY TEMP_FILE. Never read it, never touch other files, never answer in chat. Done once written.
+- Unwritable TEMP_FILE falls back to final message.
 </Rules>
 ]],
       range:to_string(),

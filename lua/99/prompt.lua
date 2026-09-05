@@ -513,21 +513,15 @@ function Prompt:finalize()
     local f_loc =
       self._99.prompts.get_file_location(self.full_path, visual_data.range)
     table.insert(self.agent_context, f_loc)
-    table.insert(
-      self.agent_context,
-      self._99.prompts.get_range_text(visual_data.range)
-    )
   end
   table.insert(
     self.agent_context,
     self._99.prompts.tmp_file_location(self.tmp_file)
   )
 
-  if
-    self.operation == "visual"
-    or self.operation == "tutorial"
-    or self.operation == "search"
-  then
+  --- visual carries its merged output discipline inside its own Rules;
+  --- other file-writing operations share the generic block below
+  if self.operation == "tutorial" or self.operation == "search" then
     table.insert(self.agent_context, self._99.prompts.only_tmp_file_change())
   end
 

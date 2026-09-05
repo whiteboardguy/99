@@ -57,6 +57,12 @@ local function visual_call_with_range(context, range)
   })
 end
 
+--- @param context _99.Prompt
+--- @return string
+local function assembled_prompt(context)
+  return table.concat(context:content(), "\n")
+end
+
 describe("visual", function()
   it("should replace visual selection with AI response", function()
     local p, buffer, range = setup(content, 2, 1, 2, 23)
@@ -286,4 +292,102 @@ describe("visual", function()
       eq({ "local x = 1", "return x" }, r(buffer))
     end
   )
+
+  describe("prompt density", function()
+    it("omits FunctionText and shared MustObey, keeps file location", function()
+      local _, _, range = setup(content, 2, 1, 2, 23)
+      local state = _99.__get_state()
+      local context = Prompt.visual(state)
+
+      visual_call_with_range(context, range)
+
+      local assembled = assembled_prompt(context)
+      assert.is_nil(assembled:find("FunctionText", 1, true))
+      assert.is_nil(assembled:find("MustObey", 1, true))
+      assert.is_not_nil(assembled:find("<Location>", 1, true))
+      assert.is_not_nil(assembled:find("<TEMP_FILE>", 1, true))
+      assert.is_not_nil(assembled:find("Write ONLY TEMP_FILE", 1, true))
+    end)
+
+    it("keeps every load-bearing visual element", function()
+      local _, _, range = setup(content, 2, 1, 2, 23)
+      local state = _99.__get_state()
+      local context = Prompt.visual(state)
+
+      visual_call_with_range(context, range)
+
+      local assembled = assembled_prompt(context)
+      --- target, context, task, output contract, fallback
+      assert.is_not_nil(assembled:find("<SELECTION_LOCATION>", 1, true))
+      assert.is_not_nil(assembled:find("-- TODO: implement", 1, true))
+      assert.is_not_nil(assembled:find("<SURROUNDING_CONTEXT>", 1, true))
+      assert.is_not_nil(assembled:find("local function foo()", 1, true))
+      assert.is_not_nil(assembled:find("<Prompt>", 1, true))
+      assert.is_not_nil(assembled:find("test prompt", 1, true))
+      assert.is_not_nil(assembled:find("falls back to final message", 1, true))
+      assert.is_not_nil(assembled:find("no fences", 1, true))
+    end)
+
+    it("dedupes identical reference contents", function()
+      local _, _, range = setup(content, 2, 1, 2, 23)
+      local state = _99.__get_state()
+      local context = Prompt.visual(state)
+
+      local tmp = vim.fn.tempname()
+      local file = assert(io.open(tmp, "w"))
+      file:write("RULE-MARKER-123")
+      file:close()
+
+      context.data.range = range
+      visual_fn(context, {
+        additional_prompt = "test prompt",
+        additional_rules = {
+          { name = "t", path = tmp },
+          { name = "t", path = tmp },
+        },
+      })
+      os.remove(tmp)
+
+      local assembled = assembled_prompt(context)
+      local _, count = assembled:gsub("RULE%-MARKER%-123", "")
+      eq(1, count)
+    end)
+
+    it("dedupes triples and preserves first-seen order", function()
+      local _, _, range = setup(content, 2, 1, 2, 23)
+      local state = _99.__get_state()
+      local context = Prompt.visual(state)
+
+      local tmp_a = vim.fn.tempname()
+      local tmp_b = vim.fn.tempname()
+      local file_a = assert(io.open(tmp_a, "w"))
+      file_a:write("MARKERAAA")
+      file_a:close()
+      local file_b = assert(io.open(tmp_b, "w"))
+      file_b:write("MARKERBBB")
+      file_b:close()
+
+      context.data.range = range
+      visual_fn(context, {
+        additional_prompt = "test prompt",
+        additional_rules = {
+          { name = "a", path = tmp_a },
+          { name = "b", path = tmp_b },
+          { name = "a", path = tmp_a },
+        },
+      })
+      os.remove(tmp_a)
+      os.remove(tmp_b)
+
+      local assembled = assembled_prompt(context)
+      local _, count_a = assembled:gsub("MARKERAAA", "")
+      local _, count_b = assembled:gsub("MARKERBBB", "")
+      eq(1, count_a)
+      eq(1, count_b)
+      assert.is_true(
+        (assembled:find("MARKERAAA", 1, true) or 0)
+          < (assembled:find("MARKERBBB", 1, true) or 0)
+      )
+    end)
+  end)
 end)
