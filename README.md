@@ -61,6 +61,7 @@ end, { desc = "99: stop all requests" })
 |---|---|---|---|
 | `model` | `string?` | provider default | Model ID used by current provider. |
 | `provider` | `_99.Providers.BaseProvider?` | `OpenCodeProvider` | Active provider implementation. |
+| `pi_thinking` | `string?` | `"max"` | Pi thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Passed as `pi --thinking`. |
 | `provider_extra_args` | `string[]?` | `{}` | Extra CLI flags appended to provider command (inserted before prompt positional arg). |
 | `opencode_no_session_persistence` | `boolean?` | `true` | When provider is OpenCode, adds `--no-session-persistence` so 99.nvim runs do not appear in normal project session history. |
 | `display_errors` | `boolean?` | `false` | Enables user-facing error display behavior used by plugin internals. |
@@ -156,6 +157,12 @@ require("99.extensions.fzf_lua").select_model()
 require("99.extensions.fzf_lua").select_provider()
 ```
 OpenCode model picker entries come from `opencode models`.
+
+### Pi provider
+Set `provider = _99.Providers.PiProvider` to run requests through `pi`.
+Pi streams reasoning as `Thinking> ` lines in the status area, separate
+from answer text. Tune cost versus quality with `pi_thinking`
+(default `"max"`).
 
 ### Logging
 - Use `_99.view_logs()` to inspect request logs from inside Neovim.

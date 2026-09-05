@@ -46,4 +46,18 @@ describe("request_status", function()
     eq(1, #calls)
     eq({ "⠸ TITLE", "bar" }, calls[1])
   end)
+
+  describe("format_ai_line", function()
+    it("prefixes plain lines with ai", function()
+      eq("ai> hello", RequestStatus.format_ai_line("hello"))
+      eq("ai> tool: bash", RequestStatus.format_ai_line("tool: bash"))
+    end)
+
+    it("passes Thinking lines through untouched", function()
+      eq(
+        "Thinking> weighing options",
+        RequestStatus.format_ai_line("Thinking> weighing options")
+      )
+    end)
+  end)
 end)

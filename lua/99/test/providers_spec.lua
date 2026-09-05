@@ -205,6 +205,29 @@ opencode/claude-sonnet-4-5 - duplicate
         "--no-session",
         "--mode",
         "json",
+        "--thinking",
+        "max",
+        "--model",
+        "inclusionai/ling-3.0-flash-fin:free",
+        "-p",
+        "test query",
+      }, cmd)
+    end)
+
+    it("uses pi_thinking from state when set", function()
+      local request = {
+        model = "inclusionai/ling-3.0-flash-fin:free",
+        _99 = { pi_thinking = "low" },
+      }
+      local cmd =
+        Providers.PiProvider._build_command(nil, "test query", request)
+      eq({
+        "pi",
+        "--no-session",
+        "--mode",
+        "json",
+        "--thinking",
+        "low",
         "--model",
         "inclusionai/ling-3.0-flash-fin:free",
         "-p",
@@ -332,6 +355,25 @@ opencode/claude-sonnet-4-5 - duplicate
         eq(nil, Providers.PiProvider._extract_response(nil, stdout))
       end)
 
+      it("ignores thinking content in assistant messages", function()
+        local stdout = table.concat({
+          '{"type":"message_end","message":{"role":"assistant","content":['
+            .. '{"type":"thinking","thinking":"hmm"},'
+            .. '{"type":"text","text":"real answer"}]}}',
+        }, "\n")
+
+        eq("real answer", Providers.PiProvider._extract_response(nil, stdout))
+      end)
+
+      it("returns nil when only thinking content exists", function()
+        local stdout = table.concat({
+          '{"type":"message_end","message":{"role":"assistant","content":['
+            .. '{"type":"thinking","thinking":"hmm"}]}}',
+        }, "\n")
+
+        eq(nil, Providers.PiProvider._extract_response(nil, stdout))
+      end)
+
       it("returns nil for empty or nil stdout", function()
         eq(nil, Providers.PiProvider._extract_response(nil, ""))
         eq(nil, Providers.PiProvider._extract_response(nil, nil))
@@ -369,6 +411,66 @@ opencode/claude-sonnet-4-5 - duplicate
               .. '{"type":"toolcall_start","id":"1","toolName":"bash"}}'
           )
         )
+      end)
+
+      it("renders thinking deltas under a Thinking marker", function()
+        eq(
+          "Thinking> weighing options",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"message_update","usage":{},"assistantMessageEvent":'
+              .. '{"type":"thinking_delta","contentIndex":0,'
+              .. '"delta":"weighing options"}}'
+          )
+        )
+      end)
+
+      it("renders thinking_end content under a Thinking marker", function()
+        eq(
+          "Thinking> settled",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"message_update","usage":{},"assistantMessageEvent":'
+              .. '{"type":"thinking_end","contentIndex":0,'
+              .. '"content":"settled"}}'
+          )
+        )
+      end)
+
+      it("collapses newlines in thinking payloads", function()
+        eq(
+          "Thinking> line one line two",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"message_update","usage":{},"assistantMessageEvent":'
+              .. '{"type":"thinking_delta","contentIndex":0,'
+              .. '"delta":"line one\\nline two"}}'
+          )
+        )
+      end)
+
+      it("hides thinking_start envelopes", function()
+        eq(
+          nil,
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"message_update","usage":{},"assistantMessageEvent":'
+              .. '{"type":"thinking_start","contentIndex":0}}'
+          )
+        )
+      end)
+
+      it("truncates long thinking payloads", function()
+        local long = string.rep("b", 500)
+        local out = Providers.PiProvider._stdout_line_to_display(
+          nil,
+          '{"type":"message_update","usage":{},"assistantMessageEvent":'
+            .. '{"type":"thinking_delta","contentIndex":0,"delta":"'
+            .. long
+            .. '"}}'
+        )
+        assert.is_true(out ~= nil)
+        eq("Thinking> " .. string.rep("b", 160) .. " …", out)
       end)
 
       it("renders failed tool executions with their result", function()
@@ -632,6 +734,29 @@ opencode/claude-sonnet-4-5 - duplicate
         eq("inclusionai/ling-3.0-flash-fin:free", state.model)
       end
     )
+
+    it("defaults pi_thinking to max", function()
+      local _99 = require("99")
+
+      _99.setup({})
+      local state = _99.__get_state()
+      eq("max", state.pi_thinking)
+    end)
+
+    it("accepts a custom pi_thinking level", function()
+      local _99 = require("99")
+
+      _99.setup({ pi_thinking = "low" })
+      local state = _99.__get_state()
+      eq("low", state.pi_thinking)
+    end)
+
+    it("rejects an unknown pi_thinking level", function()
+      local _99 = require("99")
+
+      local ok = pcall(_99.setup, { pi_thinking = "ultra" })
+      eq(false, ok)
+    end)
 
     it("uses custom model when both provider and model specified", function()
       local _99 = require("99")

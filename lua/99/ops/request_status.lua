@@ -75,6 +75,19 @@ function RequestStatus:push(line)
   end
 end
 
+--- Format one provider display line for the status area.  Thinking lines
+--- already carry their own "Thinking> " marker and pass through as-is;
+--- everything else reads as model output under "ai> ".
+---
+--- @param line string
+--- @return string
+function RequestStatus.format_ai_line(line)
+  if line:find("Thinking> ", 1, true) == 1 then
+    return line
+  end
+  return "ai> " .. line
+end
+
 function RequestStatus:start()
   local function update_spinner()
     if not self.running then

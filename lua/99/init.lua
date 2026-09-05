@@ -56,6 +56,7 @@ end
 --- @field provider? _99.Providers.BaseProvider
 --- @field provider_extra_args? string[]
 --- @field opencode_no_session_persistence? boolean
+--- @field pi_thinking? string pi thinking level: off, minimal, low, medium, high, xhigh, max (default "max")
 --- @field display_errors? boolean
 --- @field auto_add_skills? boolean
 --- @field completion? _99.Completion

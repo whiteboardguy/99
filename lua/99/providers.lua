@@ -111,6 +111,15 @@ local function truncate_status(text)
   return text:sub(1, STATUS_TEXT_MAX) .. " …"
 end
 
+--- status rows render as single virtual-text lines: collapse embedded
+--- newlines in streamed payloads (reasoning especially) into spaces.
+---
+--- @param text string
+--- @return string
+local function one_line(text)
+  return vim.trim(text:gsub("[\r\n]+", " "))
+end
+
 --- whether the installed opencode supports `--no-session-persistence`
 --- (nil = unknown, false = unsupported, true = supported)
 local opencode_no_session_support
@@ -806,11 +815,17 @@ local PiProvider = setmetatable({}, { __index = BaseProvider })
 --- @param context _99.Prompt
 --- @return string[]
 function PiProvider._build_command(_, query, context)
+  local thinking = "max"
+  if context._99 and context._99.pi_thinking then
+    thinking = context._99.pi_thinking
+  end
   return {
     "pi",
     "--no-session",
     "--mode",
     "json",
+    "--thinking",
+    thinking,
     "--model",
     context.model,
     "-p",
@@ -874,9 +889,11 @@ function PiProvider._extract_response(_, stdout_text)
 end
 
 --- Map a raw stdout line to the text shown in the status area.  pi JSON
---- events render as their meaningful payload (streaming text, tool call,
---- error, final message) instead of the raw envelope; non-JSON lines pass
---- through untouched so plain-text output keeps working.
+--- events render as their meaningful payload (streaming text, thinking,
+--- tool call, error, final message) instead of the raw envelope; non-JSON
+--- lines pass through untouched so plain-text output keeps working.
+--- thinking deltas render under a "Thinking> " marker so reasoning stays
+--- visually separate from answer text.
 ---
 --- @param _ self
 --- @param line string
@@ -909,6 +926,20 @@ function PiProvider._stdout_line_to_display(_, line)
       and vim.trim(ame.content) ~= ""
     then
       return truncate_status(ame.content)
+    end
+    if
+      ame.type == "thinking_delta"
+      and type(ame.delta) == "string"
+      and vim.trim(ame.delta) ~= ""
+    then
+      return "Thinking> " .. truncate_status(one_line(ame.delta))
+    end
+    if
+      ame.type == "thinking_end"
+      and type(ame.content) == "string"
+      and vim.trim(ame.content) ~= ""
+    then
+      return "Thinking> " .. truncate_status(one_line(ame.content))
     end
     if ame.type == "toolcall_start" then
       if type(ame.toolName) == "string" and ame.toolName ~= "" then

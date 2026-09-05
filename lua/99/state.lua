@@ -61,6 +61,27 @@ local function rules_signature(dirs)
   return table.concat(parts, ";")
 end
 
+--- valid pi thinking levels, mirroring `pi --thinking`
+local pi_thinking_levels = {
+  off = true,
+  minimal = true,
+  low = true,
+  medium = true,
+  high = true,
+  xhigh = true,
+  max = true,
+}
+
+--- @param level any
+--- @return string
+local function assert_pi_thinking(level)
+  assert(
+    type(level) == "string" and pi_thinking_levels[level],
+    "opts.pi_thinking must be one of: off, minimal, low, medium, high, xhigh, max"
+  )
+  return level
+end
+
 --- @class _99.StateProps
 --- @field model string
 --- @field md_files string[]
@@ -72,6 +93,7 @@ end
 --- @field __view_log_idx number
 --- @field __tmp_dir string | nil
 --- @field opencode_no_session_persistence boolean
+--- @field pi_thinking string
 
 --- unanswered question -- will i need to queue messages one at a time or
 --- just send them all...  So to prepare ill be sending around this state object
@@ -88,6 +110,7 @@ end
 --- @field tracking _99.State.Tracking
 --- @field __tmp_dir string | nil
 --- @field opencode_no_session_persistence boolean
+--- @field pi_thinking string
 local State = {}
 State.__index = State
 
@@ -101,6 +124,7 @@ local function create()
     provider_override = nil,
     tmp_dir = nil,
     opencode_no_session_persistence = true,
+    pi_thinking = "max",
   }
 end
 
@@ -135,6 +159,10 @@ function State.new(opts)
     )
     _99_state.opencode_no_session_persistence =
       opts.opencode_no_session_persistence
+  end
+
+  if opts.pi_thinking ~= nil then
+    _99_state.pi_thinking = assert_pi_thinking(opts.pi_thinking)
   end
 
   _99_state.provider_override = opts.provider

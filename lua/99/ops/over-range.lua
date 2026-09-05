@@ -203,12 +203,12 @@ local function over_range(context, opts)
         context._99:sync()
       end
     end,
-    -- formatted per-line display: opencode json events arrive here as their
-    -- human payload (text part, tool call, error) instead of the raw
-    -- "type/step_start/sessionID" envelope
+    -- formatted per-line display: provider json events arrive here as their
+    -- human payload (text part, thinking, tool call, error) instead of the
+    -- raw envelope
     on_stdout_line = function(line)
       if display_ai_status then
-        top_status:push("ai> " .. line)
+        top_status:push(RequestStatus.format_ai_line(line))
       end
     end,
   }))
