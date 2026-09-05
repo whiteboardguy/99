@@ -938,7 +938,9 @@ function PiProvider._stdout_line_to_display(_, line)
       and type(ame.delta) == "string"
       and vim.trim(ame.delta) ~= ""
     then
-      return "Thinking> " .. truncate_status(one_line(ame.delta))
+      --- thinking streams fragment by fragment; only finished blocks
+      --- (thinking_end) reach the status area
+      return nil
     end
     if
       ame.type == "thinking_end"

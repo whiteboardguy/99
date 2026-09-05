@@ -413,9 +413,9 @@ opencode/claude-sonnet-4-5 - duplicate
         )
       end)
 
-      it("renders thinking deltas under a Thinking marker", function()
+      it("hides streaming thinking deltas", function()
         eq(
-          "Thinking> weighing options",
+          nil,
           Providers.PiProvider._stdout_line_to_display(
             nil,
             '{"type":"message_update","usage":{},"assistantMessageEvent":'
@@ -443,8 +443,8 @@ opencode/claude-sonnet-4-5 - duplicate
           Providers.PiProvider._stdout_line_to_display(
             nil,
             '{"type":"message_update","usage":{},"assistantMessageEvent":'
-              .. '{"type":"thinking_delta","contentIndex":0,'
-              .. '"delta":"line one\\nline two"}}'
+              .. '{"type":"thinking_end","contentIndex":0,'
+              .. '"content":"line one\\nline two"}}'
           )
         )
       end)
@@ -465,7 +465,7 @@ opencode/claude-sonnet-4-5 - duplicate
         local out = Providers.PiProvider._stdout_line_to_display(
           nil,
           '{"type":"message_update","usage":{},"assistantMessageEvent":'
-            .. '{"type":"thinking_delta","contentIndex":0,"delta":"'
+            .. '{"type":"thinking_end","contentIndex":0,"content":"'
             .. long
             .. '"}}'
         )
