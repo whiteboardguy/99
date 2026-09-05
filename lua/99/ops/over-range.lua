@@ -12,9 +12,11 @@ local Point = geo.Point
 
 --- response size guard: a replacement may be at most this many times the
 --- selection's line count (plus slack) before we treat it as a whole-file
---- rewrite and refuse to apply it
-local MAX_RESPONSE_MULTIPLIER = 3
-local MAX_RESPONSE_SLACK = 50
+--- rewrite and refuse to apply it.  kept generous: legit skeleton
+--- implementations routinely grow 4x, while true whole-file echoes are
+--- caught by the file-text check below.
+local MAX_RESPONSE_MULTIPLIER = 5
+local MAX_RESPONSE_SLACK = 100
 
 --- Remove a wrapping markdown code fence (```lang ... ```) when present.
 --- @param lines string[]
@@ -168,10 +170,6 @@ local function over_range(context, opts)
 
         local reason = rejection_reason(response, range)
         if reason then
-          vim.notify(
-            "[99] visual replacement rejected: " .. reason,
-            vim.log.levels.WARN
-          )
           logger:error(
             "visual replacement rejected",
             "reason",
@@ -179,7 +177,23 @@ local function over_range(context, opts)
             "response",
             response:sub(1, 1000)
           )
-          return
+          local choice = vim.fn.confirm(
+            "[99] visual replacement rejected: " .. reason .. "\nApply anyway?",
+            "&Yes\n&No",
+            2
+          )
+          if choice ~= 1 then
+            vim.notify(
+              "[99] visual replacement rejected: " .. reason,
+              vim.log.levels.WARN
+            )
+            return
+          end
+          logger:warn(
+            "visual replacement force-applied after rejection",
+            "reason",
+            reason
+          )
         end
 
         local new_range = Range.from_marks(top_mark, bottom_mark)

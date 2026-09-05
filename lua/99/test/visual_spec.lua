@@ -178,8 +178,13 @@ describe("visual", function()
 
     visual_call_with_range(context, range)
 
+    local orig_confirm = vim.fn.confirm
+    vim.fn.confirm = function()
+      return 2
+    end
     p:resolve("success", table.concat(content, "\n"))
     test_utils.next_frame()
+    vim.fn.confirm = orig_confirm
 
     -- Buffer must remain unchanged
     eq(content, r(buffer))
@@ -196,10 +201,56 @@ describe("visual", function()
     for i = 1, 200 do
       table.insert(huge, string.format("line %d", i))
     end
+    local orig_confirm = vim.fn.confirm
+    vim.fn.confirm = function()
+      return 2
+    end
     p:resolve("success", table.concat(huge, "\n"))
     test_utils.next_frame()
+    vim.fn.confirm = orig_confirm
 
     eq(content, r(buffer))
+  end)
+
+  it("should force-apply rejected responses on confirm", function()
+    local p, buffer, range = setup(content, 2, 1, 2, 23)
+    local state = _99.__get_state()
+    local context = Prompt.visual(state)
+
+    visual_call_with_range(context, range)
+
+    local huge = {}
+    for i = 1, 200 do
+      table.insert(huge, string.format("line %d", i))
+    end
+    local orig_confirm = vim.fn.confirm
+    vim.fn.confirm = function()
+      return 1
+    end
+    p:resolve("success", table.concat(huge, "\n"))
+    test_utils.next_frame()
+    vim.fn.confirm = orig_confirm
+
+    --- 200 forced lines replace line 2
+    eq(202, #r(buffer))
+  end)
+
+  it("should accept legit expansions around 4x the selection", function()
+    local p, buffer, range = setup(content, 2, 1, 2, 23)
+    local state = _99.__get_state()
+    local context = Prompt.visual(state)
+
+    visual_call_with_range(context, range)
+
+    local grown = {}
+    for i = 1, 74 do
+      table.insert(grown, string.format("    -- expanded line %d", i))
+    end
+    p:resolve("success", table.concat(grown, "\n"))
+    test_utils.next_frame()
+
+    --- line 2 replaced by the 74-line expansion
+    eq(76, #r(buffer))
   end)
 
   it("should strip markdown code fences from responses", function()
