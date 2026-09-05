@@ -758,6 +758,108 @@ opencode/claude-sonnet-4-5 - duplicate
       eq(false, ok)
     end)
 
+    it("sets and gets thinking level at runtime", function()
+      local _99 = require("99")
+
+      _99.setup({ provider = Providers.PiProvider })
+      eq("max", _99.get_thinking())
+      _99.set_thinking("low")
+      eq("low", _99.get_thinking())
+      local state = _99.__get_state()
+      eq("low", state.pi_thinking)
+    end)
+
+    it("rejects an unknown thinking level at runtime", function()
+      local _99 = require("99")
+
+      _99.setup({ provider = Providers.PiProvider })
+      local ok = pcall(_99.set_thinking, "ultra")
+      eq(false, ok)
+      eq("max", _99.get_thinking())
+    end)
+
+    describe("thinking picker", function()
+      local catalog_path
+
+      before_each(function()
+        catalog_path = vim.fn.tempname()
+        Providers.PiProvider._catalog_path_override = catalog_path
+        local file = assert(io.open(catalog_path, "w"))
+        file:write(vim.json.encode({
+          openrouter = {
+            models = {
+              {
+                id = "z-ai/glm-5.3-flash",
+                reasoning = true,
+                thinkingLevelMap = {
+                  off = vim.NIL,
+                  minimal = vim.NIL,
+                  low = "low",
+                  medium = vim.NIL,
+                  high = "high",
+                  xhigh = vim.NIL,
+                  max = "max",
+                },
+              },
+            },
+          },
+        }))
+        file:close()
+      end)
+
+      after_each(function()
+        Providers.PiProvider._catalog_path_override = nil
+        os.remove(catalog_path)
+      end)
+
+      it("lists supported levels for the current model", function()
+        local _99 = require("99")
+        local pickers_util = require("99.extensions.pickers")
+
+        _99.setup({
+          provider = Providers.PiProvider,
+          model = "z-ai/glm-5.3-flash",
+          pi_thinking = "max",
+        })
+
+        local levels, current
+        pickers_util.get_thinking_levels(nil, nil, function(l, c)
+          levels = l
+          current = c
+        end)
+        eq("max", current)
+        eq({ "low", "high", "max" }, levels)
+      end)
+
+      it("prepends current level when the model lacks it", function()
+        local _99 = require("99")
+        local pickers_util = require("99.extensions.pickers")
+
+        _99.setup({
+          provider = Providers.PiProvider,
+          model = "z-ai/glm-5.3-flash",
+          pi_thinking = "medium",
+        })
+
+        local levels, current
+        pickers_util.get_thinking_levels(nil, nil, function(l, c)
+          levels = l
+          current = c
+        end)
+        eq("medium", current)
+        eq({ "medium", "low", "high", "max" }, levels)
+      end)
+
+      it("selecting a level updates state", function()
+        local _99 = require("99")
+        local pickers_util = require("99.extensions.pickers")
+
+        _99.setup({ provider = Providers.PiProvider })
+        pickers_util.on_thinking_selected("low")
+        eq("low", _99.get_thinking())
+      end)
+    end)
+
     it("uses custom model when both provider and model specified", function()
       local _99 = require("99")
 
@@ -803,6 +905,180 @@ opencode/claude-sonnet-4-5 - duplicate
       })
       local state = _99.__get_state()
       eq(false, state.opencode_no_session_persistence)
+    end)
+  end)
+
+  describe("fetch_thinking_levels", function()
+    local catalog_path
+
+    before_each(function()
+      catalog_path = vim.fn.tempname()
+      Providers.PiProvider._catalog_path_override = catalog_path
+    end)
+
+    after_each(function()
+      Providers.PiProvider._catalog_path_override = nil
+      os.remove(catalog_path)
+    end)
+
+    --- @param store table
+    local function write_catalog(store)
+      local file = assert(io.open(catalog_path, "w"))
+      file:write(vim.json.encode(store))
+      file:close()
+    end
+
+    --- @param model string
+    --- @return string[]|nil, string|nil
+    local function fetch(model)
+      local levels, err
+      Providers.PiProvider.fetch_thinking_levels(model, function(l, e)
+        levels = l
+        err = e
+      end)
+      return levels, err
+    end
+
+    it("returns mapped levels for an exact id match", function()
+      write_catalog({
+        openrouter = {
+          models = {
+            {
+              id = "z-ai/glm-5.3-flash",
+              reasoning = true,
+              thinkingLevelMap = {
+                off = vim.NIL,
+                minimal = vim.NIL,
+                low = "low",
+                medium = vim.NIL,
+                high = "high",
+                xhigh = vim.NIL,
+                max = "max",
+              },
+            },
+          },
+        },
+      })
+
+      local levels, err = fetch("z-ai/glm-5.3-flash")
+      eq(nil, err)
+      eq({ "low", "high", "max" }, levels)
+    end)
+
+    it("returns standard levels when the map is absent", function()
+      write_catalog({
+        openrouter = {
+          models = {
+            {
+              id = "inclusionai/ling-3.0-flash-fin:free",
+              reasoning = true,
+            },
+          },
+        },
+      })
+
+      local levels, err = fetch("inclusionai/ling-3.0-flash-fin:free")
+      eq(nil, err)
+      eq({ "off", "minimal", "low", "medium", "high" }, levels)
+    end)
+
+    it(
+      "excludes null entries but keeps extended levels unmapped out",
+      function()
+        write_catalog({
+          openrouter = {
+            models = {
+              {
+                id = "aion",
+                reasoning = true,
+                thinkingLevelMap = { off = vim.NIL },
+              },
+            },
+          },
+        })
+
+        local levels, err = fetch("aion")
+        eq(nil, err)
+        eq({ "minimal", "low", "medium", "high" }, levels)
+      end
+    )
+
+    it("returns off only for non-reasoning models", function()
+      write_catalog({
+        openrouter = {
+          models = {
+            { id = "plain", reasoning = false },
+          },
+        },
+      })
+
+      local levels, err = fetch("plain")
+      eq(nil, err)
+      eq({ "off" }, levels)
+    end)
+
+    it("matches ids with a provider prefix stripped", function()
+      write_catalog({
+        openrouter = {
+          models = {
+            {
+              id = "z-ai/glm-5.3-flash",
+              reasoning = true,
+              thinkingLevelMap = {
+                off = vim.NIL,
+                minimal = vim.NIL,
+                low = "low",
+                medium = vim.NIL,
+                high = "high",
+                xhigh = vim.NIL,
+                max = "max",
+              },
+            },
+          },
+        },
+      })
+
+      local levels, err = fetch("openrouter/z-ai/glm-5.3-flash")
+      eq(nil, err)
+      eq({ "low", "high", "max" }, levels)
+    end)
+
+    it("falls back to all levels for unknown models", function()
+      write_catalog({ openrouter = { models = {} } })
+
+      local levels, err = fetch("nope")
+      eq(nil, err)
+      eq({ "off", "minimal", "low", "medium", "high", "xhigh", "max" }, levels)
+    end)
+
+    it("falls back to all levels when the catalog is missing", function()
+      os.remove(catalog_path)
+
+      local levels, err = fetch("anything")
+      eq(nil, err)
+      eq({ "off", "minimal", "low", "medium", "high", "xhigh", "max" }, levels)
+    end)
+
+    it("falls back to all levels on invalid JSON", function()
+      local file = assert(io.open(catalog_path, "w"))
+      file:write("not json {{{")
+      file:close()
+
+      local levels, err = fetch("anything")
+      eq(nil, err)
+      eq({ "off", "minimal", "low", "medium", "high", "xhigh", "max" }, levels)
+    end)
+  end)
+
+  describe("BaseProvider thinking levels", function()
+    it("reports unsupported", function()
+      local levels, err
+      Providers.BaseProvider.fetch_thinking_levels("m", function(l, e)
+        levels = l
+        err = e
+      end)
+      eq(nil, levels)
+      eq("This provider does not support thinking levels", err)
     end)
   end)
 

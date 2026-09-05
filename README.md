@@ -164,6 +164,18 @@ Pi streams reasoning as `Thinking> ` lines in the status area, separate
 from answer text. Tune cost versus quality with `pi_thinking`
 (default `"max"`).
 
+### Thinking selector
+If you use Telescope or fzf-lua:
+```lua
+require("99.extensions.telescope").select_thinking()
+```
+```lua
+require("99.extensions.fzf_lua").select_thinking()
+```
+Levels come from pi's local model catalog (`models-store.json`) for the
+current model: unsupported levels stay hidden. When the catalog is missing
+or lacks the model, all levels show. Pi clamps unknown levels server-side.
+
 ### Logging
 - Use `_99.view_logs()` to inspect request logs from inside Neovim.
 - For file logging, set `logger = { type = "file", path = "/tmp/99.log", level = _99.DEBUG }`.

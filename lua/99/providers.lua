@@ -208,6 +208,12 @@ function BaseProvider.fetch_models(callback)
   callback(nil, "This provider does not support listing models")
 end
 
+--- @param _model string
+--- @param callback fun(levels: string[]|nil, err: string|nil): nil
+function BaseProvider.fetch_thinking_levels(_model, callback)
+  callback(nil, "This provider does not support thinking levels")
+end
+
 --- @param context _99.Prompt
 function BaseProvider:_retrieve_response(context)
   local logger = context.logger:set_area(self:_get_provider_name())
@@ -1022,6 +1028,109 @@ function PiProvider.fetch_models(callback)
       callback(models, nil)
     end)
   end)
+end
+
+--- pi thinking levels in canonical order, mirroring pi's
+--- EXTENDED_THINKING_LEVELS
+PiProvider.THINKING_LEVELS =
+  { "off", "minimal", "low", "medium", "high", "xhigh", "max" }
+
+--- TEST ONLY: override the models-store catalog path so specs do not touch
+--- the real ~/.pi/agent directory
+PiProvider._catalog_path_override = nil
+
+--- @return string
+local function pi_catalog_path()
+  if PiProvider._catalog_path_override then
+    return PiProvider._catalog_path_override
+  end
+  local dir = vim.env.PI_CODING_AGENT_DIR or vim.fn.expand("~/.pi/agent")
+  return dir .. "/models-store.json"
+end
+
+--- supported thinking levels for one catalog entry, mirroring pi's
+--- getSupportedThinkingLevels: non-reasoning models offer off only, null
+--- map entries are hidden, and xhigh/max need an explicit mapping.
+---
+--- @param entry any decoded catalog model
+--- @return string[]
+local function pi_supported_thinking_levels(entry)
+  if type(entry) ~= "table" or not entry.reasoning then
+    return { "off" }
+  end
+  local map = entry.thinkingLevelMap
+  if type(map) ~= "table" then
+    map = {}
+  end
+  local out = {}
+  for _, level in ipairs(PiProvider.THINKING_LEVELS) do
+    local mapped = map[level]
+    --- null entries are hidden; xhigh/max need an explicit mapping
+    local hidden = mapped == vim.NIL
+      or ((level == "xhigh" or level == "max") and mapped == nil)
+    if not hidden then
+      table.insert(out, level)
+    end
+  end
+  return out
+end
+
+--- find a catalog entry by model id.  tries an exact match first, then
+--- strips one leading provider prefix segment ("openrouter/<id>").
+---
+--- @param models any[] decoded catalog models
+--- @param model string
+--- @return any|nil
+local function pi_find_model(models, model)
+  for _, entry in ipairs(models) do
+    if type(entry) == "table" and entry.id == model then
+      return entry
+    end
+  end
+  local stripped = model:match("^[^/]+/(.+)$")
+  if stripped then
+    for _, entry in ipairs(models) do
+      if type(entry) == "table" and entry.id == stripped then
+        return entry
+      end
+    end
+  end
+  return nil
+end
+
+--- thinking levels the given model supports, read from pi's local model
+--- catalog.  falls back to the full level list when the catalog is
+--- missing, unreadable, or has no entry: pi clamps unknown levels
+--- server-side, so offering them never breaks a request.
+---
+--- @param model string
+--- @param callback fun(levels: string[]|nil, err: string|nil): nil
+function PiProvider.fetch_thinking_levels(model, callback)
+  local ok, store = pcall(function()
+    local file = assert(io.open(pi_catalog_path(), "r"))
+    local content = file:read("*a")
+    file:close()
+    return vim.json.decode(content)
+  end)
+  if not ok or type(store) ~= "table" then
+    callback(vim.list_extend({}, PiProvider.THINKING_LEVELS), nil)
+    return
+  end
+  local catalog = {}
+  for _, provider_data in pairs(store) do
+    if
+      type(provider_data) == "table"
+      and type(provider_data.models) == "table"
+    then
+      vim.list_extend(catalog, provider_data.models)
+    end
+  end
+  local entry = pi_find_model(catalog, model)
+  if not entry then
+    callback(vim.list_extend({}, PiProvider.THINKING_LEVELS), nil)
+    return
+  end
+  callback(pi_supported_thinking_levels(entry), nil)
 end
 
 return {

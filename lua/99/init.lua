@@ -499,6 +499,18 @@ function _99.set_model(model)
   return _99
 end
 
+--- @param level string pi thinking level: off, minimal, low, medium, high, xhigh, max
+--- @return _99
+function _99.set_thinking(level)
+  _99_state:set_thinking(level)
+  return _99
+end
+
+--- @return string
+function _99.get_thinking()
+  return _99_state.pi_thinking
+end
+
 --- @return string
 function _99.get_model()
   return _99_state.model

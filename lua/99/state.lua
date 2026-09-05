@@ -188,6 +188,10 @@ function State:sync()
   utils.write_file_json_safe(tracking, file)
 end
 
+--- @param level string
+function State:set_thinking(level)
+  self.pi_thinking = assert_pi_thinking(level)
+end
 --- @return string
 function State:tmp_dir()
   return get_tmp_dir(self)

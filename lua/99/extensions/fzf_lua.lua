@@ -45,6 +45,33 @@ function M.select_model(provider)
   end)
 end
 
+--- @param provider _99.Providers.BaseProvider?
+--- @param model string?
+function M.select_thinking(provider, model)
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify(
+      "99: fzf-lua is required for this extension",
+      vim.log.levels.ERROR
+    )
+    return
+  end
+
+  pickers_util.get_thinking_levels(provider, model, function(levels, current)
+    fzf.fzf_exec(promote_current(levels, current), {
+      prompt = "99: Select Thinking (current: " .. current .. ")> ",
+      actions = {
+        ["enter"] = function(selected)
+          if not selected or #selected == 0 then
+            return
+          end
+          pickers_util.on_thinking_selected(selected[1])
+        end,
+      },
+    })
+  end)
+end
+
 function M.select_provider()
   local ok, fzf = pcall(require, "fzf-lua")
   if not ok then

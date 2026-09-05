@@ -53,6 +53,46 @@ function M.select_model(provider)
   end)
 end
 
+--- @param provider _99.Providers.BaseProvider?
+--- @param model string?
+function M.select_thinking(provider, model)
+  local ok, pickers = pcall(require, "telescope.pickers")
+  if not ok then
+    vim.notify(
+      "99: telescope.nvim is required for this extension",
+      vim.log.levels.ERROR
+    )
+    return
+  end
+
+  local finders = require("telescope.finders")
+  local conf = require("telescope.config").values
+  local actions = require("telescope.actions")
+  local action_state = require("telescope.actions.state")
+
+  pickers_util.get_thinking_levels(provider, model, function(levels, current)
+    pickers
+      .new({}, {
+        prompt_title = "99: Select Thinking (current: " .. current .. ")",
+        default_selection_index = index_of(levels, current),
+        finder = finders.new_table({ results = levels }),
+        sorter = conf.generic_sorter({}),
+        attach_mappings = function(prompt_bufnr)
+          actions.select_default:replace(function()
+            actions.close(prompt_bufnr)
+            local selection = action_state.get_selected_entry()
+            if not selection then
+              return
+            end
+            pickers_util.on_thinking_selected(selection[1])
+          end)
+          return true
+        end,
+      })
+      :find()
+  end)
+end
+
 function M.select_provider()
   local ok, pickers = pcall(require, "telescope.pickers")
   if not ok then

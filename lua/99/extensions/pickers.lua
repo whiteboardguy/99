@@ -70,6 +70,50 @@ function M.on_model_selected(model)
   vim.notify("99: Model set to " .. model)
 end
 
+--- @param provider _99.Providers.BaseProvider?
+--- @param model string?
+--- @param callback fun(levels: string[], current: string): nil
+function M.get_thinking_levels(provider, model, callback)
+  provider = provider or _99.get_provider()
+  model = model or _99.get_model()
+
+  if type(provider.fetch_thinking_levels) ~= "function" then
+    vim.notify(
+      "99: Provider does not support thinking levels",
+      vim.log.levels.ERROR
+    )
+    return
+  end
+  provider.fetch_thinking_levels(model, function(levels, err)
+    if err then
+      vim.notify("99: " .. err, vim.log.levels.ERROR)
+      return
+    end
+    if not levels or #levels == 0 then
+      vim.notify("99: No thinking levels available", vim.log.levels.WARN)
+      return
+    end
+    local current = _99.get_thinking()
+    local has_current = false
+    for _, level in ipairs(levels) do
+      if level == current then
+        has_current = true
+        break
+      end
+    end
+    if not has_current and current ~= "" then
+      table.insert(levels, 1, current)
+    end
+    callback(levels, current)
+  end)
+end
+
+--- @param level string
+function M.on_thinking_selected(level)
+  _99.set_thinking(level)
+  vim.notify("99: Thinking level set to " .. level)
+end
+
 --- @param name string
 --- @param lookup table<string, _99.Providers.BaseProvider>
 function M.on_provider_selected(name, lookup)
