@@ -195,6 +195,380 @@ opencode/claude-sonnet-4-5 - duplicate
     end)
   end)
 
+  describe("PiProvider", function()
+    it("builds correct command with model", function()
+      local request = { model = "inclusionai/ling-3.0-flash-fin:free" }
+      local cmd =
+        Providers.PiProvider._build_command(nil, "test query", request)
+      eq({
+        "pi",
+        "--no-session",
+        "--mode",
+        "json",
+        "--model",
+        "inclusionai/ling-3.0-flash-fin:free",
+        "-p",
+        "test query",
+      }, cmd)
+    end)
+
+    it("has correct provider name", function()
+      eq("PiProvider", Providers.PiProvider._get_provider_name())
+    end)
+
+    it("has correct default model", function()
+      eq(
+        "inclusionai/ling-3.0-flash-fin:free",
+        Providers.PiProvider._get_default_model()
+      )
+    end)
+
+    describe("fetch_models", function()
+      local original_system
+
+      before_each(function()
+        original_system = vim.system
+      end)
+
+      after_each(function()
+        vim.system = original_system
+      end)
+
+      it("parses model ids from table output and deduplicates", function()
+        vim.system = function(cmd, _, cb)
+          eq({ "pi", "--list-models" }, cmd)
+          cb({
+            code = 0,
+            stdout = "provider    model                                  context  max-out\n"
+              .. "openrouter  inclusionai/ling-3.0-flash-fin:free  262.1K   32.8K\n"
+              .. "openrouter  ~anthropic/claude-sonnet-latest      1M       128K\n"
+              .. "openrouter  inclusionai/ling-3.0-flash-fin:free  262.1K   32.8K\n",
+          })
+        end
+
+        local actual_models, actual_err
+        Providers.PiProvider.fetch_models(function(models, err)
+          actual_models = models
+          actual_err = err
+        end)
+        vim.wait(100, function()
+          return actual_models ~= nil or actual_err ~= nil
+        end)
+
+        eq(nil, actual_err)
+        eq({
+          "inclusionai/ling-3.0-flash-fin:free",
+          "anthropic/claude-sonnet-latest",
+        }, actual_models)
+      end)
+
+      it("returns an error when listing fails", function()
+        vim.system = function(_, _, cb)
+          cb({ code = 1, stdout = "", stderr = "boom" })
+        end
+
+        local actual_models, actual_err
+        Providers.PiProvider.fetch_models(function(models, err)
+          actual_models = models
+          actual_err = err
+        end)
+        vim.wait(100, function()
+          return actual_models ~= nil or actual_err ~= nil
+        end)
+
+        eq(nil, actual_models)
+        eq("Failed to fetch models from pi", actual_err)
+      end)
+    end)
+
+    describe("_extract_response", function()
+      it("takes the last assistant message_end text", function()
+        local stdout = table.concat({
+          '{"type":"session","version":3,"id":"s1"}',
+          '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first draft"}]}}',
+          '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"  final answer  "}]}}',
+        }, "\n")
+
+        eq(
+          "  final answer  ",
+          Providers.PiProvider._extract_response(nil, stdout)
+        )
+      end)
+
+      it(
+        "falls back to agent_end messages when no message_end exists",
+        function()
+          local stdout = table.concat({
+            '{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]},'
+              .. '{"role":"assistant","content":[{"type":"text","text":"agent answer"}]}]}',
+          }, "\n")
+
+          eq(
+            "agent answer",
+            Providers.PiProvider._extract_response(nil, stdout)
+          )
+        end
+      )
+
+      it("falls back to streaming text_end content", function()
+        local stdout = table.concat({
+          '{"type":"message_update","usage":{},"assistantMessageEvent":'
+            .. '{"type":"text_end","contentIndex":0,"content":"streamed answer"}}',
+        }, "\n")
+
+        eq(
+          "streamed answer",
+          Providers.PiProvider._extract_response(nil, stdout)
+        )
+      end)
+
+      it("ignores user messages and tool events", function()
+        local stdout = table.concat({
+          '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"user text"}]}}',
+          '{"type":"tool_execution_start","toolCallId":"1","toolName":"read","args":{}}',
+          '{"type":"tool_execution_end","toolCallId":"1","toolName":"read","result":{},"isError":false}',
+        }, "\n")
+
+        eq(nil, Providers.PiProvider._extract_response(nil, stdout))
+      end)
+
+      it("returns nil for empty or nil stdout", function()
+        eq(nil, Providers.PiProvider._extract_response(nil, ""))
+        eq(nil, Providers.PiProvider._extract_response(nil, nil))
+      end)
+    end)
+
+    describe("_stdout_line_to_display", function()
+      it("renders text deltas as their payload", function()
+        eq(
+          "hello there",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"message_update","usage":{},"assistantMessageEvent":'
+              .. '{"type":"text_delta","contentIndex":0,"delta":"hello there"}}'
+          )
+        )
+      end)
+
+      it("renders tool_execution_start as a tool line", function()
+        eq(
+          "tool: read",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"tool_execution_start","toolCallId":"1","toolName":"read","args":{}}'
+          )
+        )
+      end)
+
+      it("renders toolcall_start as a tool line", function()
+        eq(
+          "tool: bash",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"message_update","usage":{},"assistantMessageEvent":'
+              .. '{"type":"toolcall_start","id":"1","toolName":"bash"}}'
+          )
+        )
+      end)
+
+      it("renders failed tool executions with their result", function()
+        eq(
+          "error: denied",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"tool_execution_end","toolCallId":"1","toolName":"bash","result":"denied","isError":true}'
+          )
+        )
+      end)
+
+      it("hides successful tool executions", function()
+        eq(
+          nil,
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"tool_execution_end","toolCallId":"1","toolName":"read","result":{},"isError":false}'
+          )
+        )
+      end)
+
+      it("renders final assistant messages as their text", function()
+        eq(
+          "done",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}'
+          )
+        )
+      end)
+
+      it("hides lifecycle envelopes", function()
+        eq(
+          nil,
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"session","version":3,"id":"s1"}'
+          )
+        )
+        eq(
+          nil,
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"turn_start"}'
+          )
+        )
+        eq(
+          nil,
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            '{"type":"message_start","message":{"role":"assistant","content":[]}}'
+          )
+        )
+      end)
+
+      it("passes non-json lines through untouched", function()
+        eq(
+          "plain text line",
+          Providers.PiProvider._stdout_line_to_display(
+            nil,
+            "  plain text line  "
+          )
+        )
+      end)
+
+      it("hides blank lines", function()
+        eq(nil, Providers.PiProvider._stdout_line_to_display(nil, ""))
+        eq(nil, Providers.PiProvider._stdout_line_to_display(nil, "   "))
+      end)
+
+      it("truncates long text payloads", function()
+        local long = string.rep("a", 500)
+        local out = Providers.PiProvider._stdout_line_to_display(
+          nil,
+          '{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"'
+            .. long
+            .. '"}}'
+        )
+        assert.is_true(out ~= nil)
+        assert.is_true(#out < #long)
+        eq(string.rep("a", 160) .. " …", out)
+      end)
+    end)
+
+    describe("make_request", function()
+      local original_system
+
+      before_each(function()
+        original_system = vim.system
+      end)
+
+      after_each(function()
+        vim.system = original_system
+      end)
+
+      it("does not retry generic failures", function()
+        local calls = 0
+        local done = false
+        local results = {}
+        vim.system = function(cmd, opts, cb)
+          eq("pi", cmd[1])
+          calls = calls + 1
+          if opts.stdout then
+            opts.stdout(nil, "boom")
+          end
+          cb({ code = 1, signal = 0, stdout = "boom", stderr = "" })
+        end
+
+        local tmp = vim.fn.tempname()
+        local logger = require("99.logger.logger"):set_id(1234)
+        logger.level = require("99.logger.level").FATAL
+        local context = {
+          logger = logger,
+          tmp_file = tmp,
+          _99 = nil,
+          is_cancelled = function()
+            return false
+          end,
+          _set_process = function() end,
+        }
+        Providers.PiProvider:make_request("q", context, {
+          on_start = function() end,
+          on_complete = function(status, res)
+            done = true
+            table.insert(results, { status, res })
+          end,
+          on_stdout = function() end,
+          on_stderr = function() end,
+        })
+        vim.wait(2000, function()
+          return done
+        end)
+
+        eq(1, calls)
+        eq(1, #results)
+        eq("failed", results[1][1])
+      end)
+
+      it(
+        "renders clean display lines when chunks split json events mid-line",
+        function()
+          local done = false
+          local display_lines = {}
+          vim.system = function(_, opts, cb)
+            local fragments = {
+              '{"type":"session","version":3,"id":"s1"}\n'
+                .. '{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"te',
+              'xt_delta","contentIndex":0,"delta":"thinking out loud..."}}\n'
+                .. '{"type":"tool_execution_start","toolCallId":"1","toolName":"bash","args":{}}',
+              '\n{"type":"message_end","message":{"role":"assistant",'
+                .. '"content":[{"type":"text","text":"the answer"}]}}\n',
+            }
+            for i = 1, #fragments do
+              if opts.stdout and fragments[i] then
+                opts.stdout(nil, fragments[i])
+              end
+            end
+            cb({ code = 0, signal = 0, stdout = "", stderr = "" })
+          end
+
+          local tmp = vim.fn.tempname()
+          local logger = require("99.logger.logger"):set_id(1234)
+          logger.level = require("99.logger.level").FATAL
+          local context = {
+            logger = logger,
+            tmp_file = tmp,
+            _99 = nil,
+            is_cancelled = function()
+              return false
+            end,
+            _set_process = function() end,
+          }
+          Providers.PiProvider:make_request("q", context, {
+            on_start = function() end,
+            on_complete = function()
+              done = true
+            end,
+            on_stdout = function() end,
+            on_stdout_line = function(line)
+              table.insert(display_lines, line)
+            end,
+            on_stderr = function() end,
+          })
+          vim.wait(2000, function()
+            return done
+          end)
+
+          eq(
+            { "thinking out loud...", "tool: bash", "the answer" },
+            display_lines
+          )
+          for _, line in ipairs(display_lines) do
+            assert.is_nil(line:find('{"', 1, true))
+          end
+        end
+      )
+    end)
+  end)
+
   describe("provider integration", function()
     it("can be set as provider override", function()
       local _99 = require("99")
@@ -245,6 +619,17 @@ opencode/claude-sonnet-4-5 - duplicate
         _99.setup({ provider = Providers.GeminiCLIProvider })
         local state = _99.__get_state()
         eq("auto", state.model)
+      end
+    )
+
+    it(
+      "uses PiProvider default model when provider specified but no model",
+      function()
+        local _99 = require("99")
+
+        _99.setup({ provider = Providers.PiProvider })
+        local state = _99.__get_state()
+        eq("inclusionai/ling-3.0-flash-fin:free", state.model)
       end
     )
 
@@ -302,6 +687,7 @@ opencode/claude-sonnet-4-5 - duplicate
       eq("function", type(Providers.ClaudeCodeProvider.make_request))
       eq("function", type(Providers.CursorAgentProvider.make_request))
       eq("function", type(Providers.GeminiCLIProvider.make_request))
+      eq("function", type(Providers.PiProvider.make_request))
     end)
   end)
 

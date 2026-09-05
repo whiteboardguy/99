@@ -6,7 +6,7 @@ Neovim-first AI workflow plugin for visual edits, search, vibe, and tutorial gen
 - Project search workflow with quickfix results (`_99.search()`)
 - Vibe workflow with quickfix results (`_99.vibe()`)
 - Tutorial generation workflow (`_99.tutorial()`)
-- Provider abstraction (OpenCode, Claude Code, Cursor Agent, Kiro, Gemini CLI)
+- Provider abstraction (OpenCode, Claude Code, Cursor Agent, Kiro, Gemini CLI, Pi)
 - Runtime model/provider switching APIs
 - Prompt references with `#rules` and `@files` completion
 - In-flight request status window and per-request logs
@@ -19,6 +19,7 @@ Neovim-first AI workflow plugin for visual edits, search, vibe, and tutorial gen
   - `cursor-agent`
   - `kiro-cli`
   - `gemini`
+  - `pi`
 
 ## Installation
 ```lua
@@ -86,6 +87,7 @@ end, { desc = "99: stop all requests" })
 | `CursorAgentProvider` | `cursor-agent` | `sonnet-4.5` |
 | `KiroProvider` | `kiro-cli` | `claude-sonnet-4.5` |
 | `GeminiCLIProvider` | `gemini` | `auto` |
+| `PiProvider` | `pi` | `inclusionai/ling-3.0-flash-fin:free` |
 
 ## Usage
 
