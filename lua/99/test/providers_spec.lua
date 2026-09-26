@@ -4,10 +4,23 @@ local eq = assert.are.same
 local Providers = require("99.providers")
 
 describe("providers", function()
+  --- default to the legacy branch so setup()-driven specs never spawn the
+  --- real opencode binary; v2 specs pin themselves explicitly
+  before_each(function()
+    Providers.OpenCodeProvider._test_set_version(1)
+  end)
+
+  after_each(function()
+    Providers.OpenCodeProvider._reset_version_probe()
+  end)
+
   describe("OpenCodeProvider", function()
     local original_support_check
 
     before_each(function()
+      --- legacy v1 behavior is the default subject here; v2 cases pin
+      --- themselves explicitly
+      Providers.OpenCodeProvider._test_set_version(1)
       original_support_check =
         Providers.OpenCodeProvider._supports_no_session_persistence
       Providers.OpenCodeProvider._supports_no_session_persistence = function()
@@ -18,6 +31,7 @@ describe("providers", function()
     after_each(function()
       Providers.OpenCodeProvider._supports_no_session_persistence =
         original_support_check
+      Providers.OpenCodeProvider._reset_version_probe()
     end)
 
     it("builds correct command with model", function()
@@ -30,6 +44,53 @@ describe("providers", function()
         "--no-session-persistence",
         "--agent",
         "build",
+        "--title",
+        "[99.nvim]",
+        "--format",
+        "json",
+        "-m",
+        "anthropic/claude-sonnet-4-5",
+        "test query",
+      }, cmd)
+    end)
+
+    it("drops the persistence flag on opencode v2", function()
+      Providers.OpenCodeProvider._test_set_version(2)
+
+      local request = {
+        model = "anthropic/claude-sonnet-4-5",
+        _99 = { opencode_no_session_persistence = true },
+      }
+      local cmd =
+        Providers.OpenCodeProvider._build_command(nil, "test query", request)
+      eq({
+        "opencode",
+        "run",
+        "--agent",
+        "build",
+        "--title",
+        "[99.nvim]",
+        "--format",
+        "json",
+        "-m",
+        "anthropic/claude-sonnet-4-5",
+        "test query",
+      }, cmd)
+    end)
+
+    it("uses the configured agent", function()
+      local request = {
+        model = "anthropic/claude-sonnet-4-5",
+        _99 = { opencode_agent = "plan" },
+      }
+      local cmd =
+        Providers.OpenCodeProvider._build_command(nil, "test query", request)
+      eq({
+        "opencode",
+        "run",
+        "--no-session-persistence",
+        "--agent",
+        "plan",
         "--title",
         "[99.nvim]",
         "--format",
@@ -104,9 +165,11 @@ describe("providers", function()
 
       after_each(function()
         vim.system = original_system
+        Providers.OpenCodeProvider._reset_version_probe()
       end)
 
       it("parses model ids from descriptive output and deduplicates", function()
+        Providers.OpenCodeProvider._test_set_version(1)
         vim.system = function(_, _, cb)
           cb({
             code = 0,
@@ -129,6 +192,145 @@ opencode/claude-sonnet-4-5 - duplicate
 
         eq(nil, actual_err)
         eq({ "opencode/claude-sonnet-4-5", "opencode/gpt-5" }, actual_models)
+      end)
+
+      it("lists v2 models and variants through the api", function()
+        Providers.OpenCodeProvider._test_set_version(2)
+        vim.system = function(cmd, _, cb)
+          eq({ "opencode", "api", "get", "/api/model" }, cmd)
+          cb({
+            code = 0,
+            stdout = vim.json.encode({
+              location = { directory = "/tmp" },
+              data = {
+                {
+                  providerID = "opencode-go",
+                  modelID = "deepseek-v4.1-flash",
+                  enabled = true,
+                  status = "active",
+                  variants = { { id = "max" }, { id = "low" } },
+                },
+                {
+                  providerID = "opencode",
+                  modelID = "gpt-5",
+                  enabled = true,
+                  status = "active",
+                  variants = {},
+                },
+                {
+                  providerID = "opencode",
+                  modelID = "old-model",
+                  enabled = false,
+                  status = "active",
+                  variants = {},
+                },
+                {
+                  providerID = "opencode",
+                  modelID = "dead-model",
+                  enabled = true,
+                  status = "deprecated",
+                  variants = {},
+                },
+              },
+            }),
+          })
+        end
+
+        local actual_models, actual_err
+        Providers.OpenCodeProvider.fetch_models(function(models, err)
+          actual_models = models
+          actual_err = err
+        end)
+        vim.wait(100, function()
+          return actual_models ~= nil or actual_err ~= nil
+        end)
+
+        eq(nil, actual_err)
+        eq({
+          "opencode-go/deepseek-v4.1-flash",
+          "opencode-go/deepseek-v4.1-flash#max",
+          "opencode-go/deepseek-v4.1-flash#low",
+          "opencode/gpt-5",
+        }, actual_models)
+      end)
+
+      it("falls back to the cli listing when the api fails", function()
+        Providers.OpenCodeProvider._test_set_version(2)
+        local calls = {}
+        vim.system = function(cmd, _, cb)
+          table.insert(calls, cmd)
+          if cmd[2] == "api" then
+            cb({ code = 1, stdout = "", stderr = "nope" })
+          else
+            cb({ code = 0, stdout = "opencode/gpt-5\n" })
+          end
+        end
+
+        local actual_models
+        Providers.OpenCodeProvider.fetch_models(function(models)
+          actual_models = models
+        end)
+        vim.wait(100, function()
+          return actual_models ~= nil
+        end)
+
+        eq({ "opencode/gpt-5" }, actual_models)
+        eq({ "opencode", "api", "get", "/api/model" }, calls[1])
+        eq({ "opencode", "models" }, calls[2])
+      end)
+    end)
+
+    describe("fetch_default_model", function()
+      local original_system
+
+      before_each(function()
+        original_system = vim.system
+      end)
+
+      after_each(function()
+        vim.system = original_system
+        Providers.OpenCodeProvider._reset_version_probe()
+      end)
+
+      it("resolves the v2 default model", function()
+        Providers.OpenCodeProvider._test_set_version(2)
+        vim.system = function(cmd, _, cb)
+          eq({ "opencode", "api", "get", "/api/model/default" }, cmd)
+          cb({
+            code = 0,
+            stdout = vim.json.encode({
+              data = {
+                modelID = "deepseek-v4.1-flash",
+                providerID = "opencode-go",
+              },
+            }),
+          })
+        end
+
+        local actual_model, actual_err
+        Providers.OpenCodeProvider.fetch_default_model(function(model, err)
+          actual_model = model
+          actual_err = err
+        end)
+        vim.wait(100, function()
+          return actual_model ~= nil or actual_err ~= nil
+        end)
+
+        eq(nil, actual_err)
+        eq("opencode-go/deepseek-v4.1-flash", actual_model)
+      end)
+
+      it("reports v1 as unsupported", function()
+        Providers.OpenCodeProvider._test_set_version(1)
+
+        local actual_model, actual_err
+        Providers.OpenCodeProvider.fetch_default_model(function(model, err)
+          actual_model = model
+          actual_err = err
+        end)
+
+        eq(nil, actual_model)
+        eq("opencode v2 required for default model lookup", actual_err)
       end)
     end)
   end)
@@ -870,6 +1072,53 @@ opencode/claude-sonnet-4-5 - duplicate
       local state = _99.__get_state()
       eq("custom-model", state.model)
     end)
+
+    it("defaults the opencode agent to build", function()
+      local _99 = require("99")
+
+      _99.setup({})
+      eq("build", _99.__get_state().opencode_agent)
+    end)
+
+    it("accepts a custom opencode agent", function()
+      local _99 = require("99")
+
+      _99.setup({ opencode_agent = "plan" })
+      eq("plan", _99.__get_state().opencode_agent)
+    end)
+
+    it("rejects a non-string opencode agent", function()
+      local _99 = require("99")
+
+      local ok = pcall(_99.setup, { opencode_agent = 12 })
+      eq(false, ok)
+    end)
+
+    it("applies the api default model while nothing else changed", function()
+      local _99 = require("99")
+      local original = Providers.OpenCodeProvider.fetch_default_model
+      Providers.OpenCodeProvider.fetch_default_model = function(cb)
+        cb("opencode-go/deepseek-v4.1-flash", nil)
+      end
+      local ok = pcall(_99.setup, {})
+      Providers.OpenCodeProvider.fetch_default_model = original
+      assert.is_true(ok)
+
+      eq("opencode-go/deepseek-v4.1-flash", _99.__get_state().model)
+    end)
+
+    it("never overwrites an explicit model with the api default", function()
+      local _99 = require("99")
+      local original = Providers.OpenCodeProvider.fetch_default_model
+      Providers.OpenCodeProvider.fetch_default_model = function(cb)
+        cb("opencode-go/deepseek-v4.1-flash", nil)
+      end
+      local ok = pcall(_99.setup, { model = "my/model" })
+      Providers.OpenCodeProvider.fetch_default_model = original
+      assert.is_true(ok)
+
+      eq("my/model", _99.__get_state().model)
+    end)
   end)
 
   describe("provider_extra_args", function()
@@ -1155,6 +1404,24 @@ opencode/claude-sonnet-4-5 - duplicate
     end)
   end)
 
+  describe("_extract_error", function()
+    it("returns the last error event message", function()
+      local stdout = table.concat({
+        '{"type":"error","error":{"message":"first"}}',
+        '{"type":"error","error":{"data":{"message":"second"}}}',
+      }, "\n")
+      eq("second", Providers.OpenCodeProvider._extract_error(nil, stdout))
+    end)
+
+    it("returns nil when there is no error event", function()
+      local stdout = table.concat({
+        '{"type":"text","part":{"type":"text","text":"fine"}}',
+      }, "\n")
+      eq(nil, Providers.OpenCodeProvider._extract_error(nil, stdout))
+      eq(nil, Providers.OpenCodeProvider._extract_error(nil, nil))
+    end)
+  end)
+
   describe("_stdout_line_to_display", function()
     it("hides step_start envelopes", function()
       eq(
@@ -1192,6 +1459,50 @@ opencode/claude-sonnet-4-5 - duplicate
         Providers.OpenCodeProvider._stdout_line_to_display(
           nil,
           '{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"running"}}}'
+        )
+      )
+    end)
+
+    it("marks completed and failed tools", function()
+      eq(
+        "tool: bash ✓",
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed"}}}'
+        )
+      )
+      eq(
+        "tool: bash (error)",
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"error"}}}'
+        )
+      )
+    end)
+
+    it("summarizes v2 step_finish events with cost and tokens", function()
+      local line = vim.json.encode({
+        type = "step_finish",
+        sessionID = "ses_1",
+        part = {
+          type = "step-finish",
+          reason = "tool-calls",
+          cost = 0.00121275,
+          tokens = { input = 7597, output = 38, reasoning = 84 },
+        },
+      })
+      eq(
+        "step: tool-calls · $0.0012 · 38 out",
+        Providers.OpenCodeProvider._stdout_line_to_display(nil, line)
+      )
+    end)
+
+    it("hides step_finish events with no interesting payload", function()
+      eq(
+        nil,
+        Providers.OpenCodeProvider._stdout_line_to_display(
+          nil,
+          '{"type":"step_finish","part":{"type":"step-finish"}}'
         )
       )
     end)
@@ -1336,6 +1647,171 @@ opencode/claude-sonnet-4-5 - duplicate
     end)
   end)
 
+  describe("opencode session lifecycle", function()
+    local original_system
+    local spawned
+    local done
+    local result
+    local context
+
+    before_each(function()
+      original_system = vim.system
+      Providers.OpenCodeProvider._test_set_version(2)
+      spawned = {}
+      done = false
+      result = nil
+      context = nil
+      vim.system = function(cmd, _, cb)
+        table.insert(spawned, cmd)
+        if cb then
+          cb({ code = 0, stdout = "", stderr = "" })
+        end
+      end
+    end)
+
+    after_each(function()
+      vim.system = original_system
+      Providers.OpenCodeProvider._reset_version_probe()
+    end)
+
+    --- @param opts {persistence: boolean|nil, stdout: string}
+    local function run(opts)
+      local tmp = vim.fn.tempname()
+      local f = io.open(tmp, "w")
+      if f then
+        f:close()
+      end
+
+      vim.system = function(cmd, system_opts, cb)
+        table.insert(spawned, cmd)
+        if cmd[1] == "opencode" and cmd[2] == "session" then
+          cb({ code = 0, stdout = "", stderr = "" })
+          return
+        end
+        if cmd[1] == "opencode" and cmd[2] == "api" then
+          cb({ code = 0, stdout = "{}", stderr = "" })
+          return
+        end
+        if system_opts and system_opts.stdout then
+          system_opts.stdout(nil, opts.stdout)
+        end
+        cb({ code = 0, signal = 0, stdout = opts.stdout, stderr = "" })
+      end
+
+      local logger = require("99.logger.logger"):set_id(1234)
+      logger.level = require("99.logger.level").FATAL
+      context = {
+        logger = logger,
+        tmp_file = tmp,
+        _99 = opts.persistence ~= nil and {
+          opencode_no_session_persistence = opts.persistence,
+        } or nil,
+        is_cancelled = function()
+          return false
+        end,
+        _set_process = function() end,
+      }
+      Providers.OpenCodeProvider:make_request("q", context, {
+        on_start = function() end,
+        on_complete = function(status, res)
+          done = true
+          result = { status, res }
+        end,
+        on_stdout = function() end,
+        on_stderr = function() end,
+      })
+      vim.wait(2000, function()
+        return done
+      end)
+    end
+
+    --- @param cmd string[]
+    --- @return boolean
+    local function spawned_command(cmd)
+      for _, entry in ipairs(spawned) do
+        if vim.deep_equal(entry, cmd) then
+          return true
+        end
+      end
+      return false
+    end
+
+    it("captures the session id and deletes it by default", function()
+      run({
+        stdout = '{"type":"text","sessionID":"ses_abc123",'
+          .. '"part":{"type":"text","text":"the answer"}}',
+      })
+
+      eq("success", result[1])
+      eq("the answer", result[2])
+      assert.is_true(
+        spawned_command({ "opencode", "session", "delete", "ses_abc123" })
+      )
+    end)
+
+    it("keeps the session when persistence is disabled", function()
+      run({
+        persistence = false,
+        stdout = '{"type":"text","sessionID":"ses_abc123",'
+          .. '"part":{"type":"text","text":"the answer"}}',
+      })
+
+      eq("success", result[1])
+      eq(
+        false,
+        spawned_command({ "opencode", "session", "delete", "ses_abc123" })
+      )
+    end)
+
+    it("fails with the error event message on a zero exit code", function()
+      run({
+        stdout = '{"type":"error","sessionID":"ses_abc123",'
+          .. '"error":{"type":"provider.no-route","message":"Model unavailable: foo"}}',
+      })
+
+      eq("failed", result[1])
+      eq("Model unavailable: foo", result[2])
+      --- nothing succeeded, but the session still should not linger
+      assert.is_true(
+        spawned_command({ "opencode", "session", "delete", "ses_abc123" })
+      )
+    end)
+
+    it("interrupts the captured session and reports it", function()
+      context = {
+        opencode_session_id = "ses_abc123",
+        logger = { debug = function() end },
+      }
+      local interrupted = Providers.OpenCodeProvider:interrupt(context)
+
+      eq(true, interrupted)
+      assert.is_true(spawned_command({
+        "opencode",
+        "api",
+        "post",
+        "/api/session/ses_abc123/interrupt",
+      }))
+    end)
+
+    it("cannot interrupt on v1 or before a session id exists", function()
+      Providers.OpenCodeProvider._test_set_version(1)
+      eq(
+        false,
+        Providers.OpenCodeProvider:interrupt({
+          opencode_session_id = "ses_abc123",
+          logger = { debug = function() end },
+        })
+      )
+      Providers.OpenCodeProvider._test_set_version(2)
+      eq(
+        false,
+        Providers.OpenCodeProvider:interrupt({
+          logger = { debug = function() end },
+        })
+      )
+    end)
+  end)
+
   describe("make_request retry", function()
     local original_system
     local original_support
@@ -1344,6 +1820,7 @@ opencode/claude-sonnet-4-5 - duplicate
       original_system = vim.system
       original_support =
         Providers.OpenCodeProvider._supports_no_session_persistence
+      Providers.OpenCodeProvider._test_set_version(2)
       --- keep _build_command from running the real probe against opencode
       Providers.OpenCodeProvider._supports_no_session_persistence = function()
         return false
@@ -1354,6 +1831,7 @@ opencode/claude-sonnet-4-5 - duplicate
       vim.system = original_system
       Providers.OpenCodeProvider._supports_no_session_persistence =
         original_support
+      Providers.OpenCodeProvider._reset_version_probe()
     end)
 
     --- drives make_request against stubbed opencode runs.  branches[key]
@@ -1366,9 +1844,11 @@ opencode/claude-sonnet-4-5 - duplicate
       local done = false
       local results = {}
       local display_lines = {}
+      local session_deletes = {}
       vim.system = function(cmd, opts, cb)
         if cmd[1] == "opencode" and cmd[2] == "session" then
           --- session cleanup from the request completion
+          table.insert(session_deletes, cmd)
           cb({ code = 0, stdout = "", stderr = "" })
           return
         end
@@ -1426,6 +1906,7 @@ opencode/claude-sonnet-4-5 - duplicate
         end,
         results = results,
         display = display_lines,
+        session_deletes = session_deletes,
         context = context,
         observer = observer,
         wait = function()
@@ -1442,7 +1923,8 @@ opencode/claude-sonnet-4-5 - duplicate
         local r = run_request({
           {
             code = 1,
-            stdout = '{"type":"error","error":{"name":"UnknownError","data":{"message":'
+            stdout = '{"type":"error","sessionID":"ses_first",'
+              .. '"error":{"name":"UnknownError","data":{"message":'
               .. '"Failed query: insert into \\"part\\" values (...)",'
               .. '"ref":"err_1"}}}',
           },
@@ -1459,6 +1941,11 @@ opencode/claude-sonnet-4-5 - duplicate
         eq(1, #r.results)
         eq("success", r.results[1][1])
         eq("the answer", r.results[1][2])
+        --- the aborted attempt's session never lingers
+        eq(
+          { "opencode", "session", "delete", "ses_first" },
+          r.session_deletes[1]
+        )
       end
     )
 

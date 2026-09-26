@@ -345,6 +345,14 @@ function Prompt:cancel()
 
   self.state = "cancelled"
   self._99.tracking:complete(self)
+
+  --- killing the client process does not stop server-side work on opencode
+  --- v2; let the provider interrupt the remote session first
+  local provider = self._99.provider_override or BaseProvider.OpenCodeProvider
+  if provider.interrupt then
+    pcall(provider.interrupt, provider, self)
+  end
+
   local proc = self._proc
   ---@diagnostic disable-next-line: undefined-field
   if proc and proc.pid then

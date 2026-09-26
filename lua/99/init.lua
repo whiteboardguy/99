@@ -55,10 +55,13 @@ end
 --- @field md_files? string[]
 --- @field provider? _99.Providers.BaseProvider
 --- @field provider_extra_args? string[]
---- @field opencode_no_session_persistence? boolean
+--- @field opencode_agent? string opencode agent for runs (default "build")
+--- @field opencode_no_session_persistence? boolean when true (default), opencode
+--- sessions are deleted after each request; on v1 this uses
+--- --no-session-persistence, on v2 the session is created and then removed by
+--- captured session id
 --- @field pi_thinking? string pi thinking level: off, minimal, low, medium, high, xhigh, max (default "max")
---- @field display_errors? boolean
---- @field auto_add_skills? boolean
+--- @field display_errors? boolean when true, request failures render as a compact float instead of a notification
 --- @field completion? _99.Completion
 --- @field tmp_dir? string
 
@@ -442,6 +445,17 @@ function _99.setup(opts)
     local provider = opts.provider or Providers.OpenCodeProvider
     if provider._get_default_model then
       _99_state.model = provider._get_default_model()
+    end
+
+    --- v2 can report the model opencode would use by default.  apply it only
+    --- while the user has not chosen one, so a later set_model always wins.
+    if provider.fetch_default_model then
+      local baseline = _99_state.model
+      provider.fetch_default_model(function(model)
+        if model and _99_state.model == baseline then
+          _99_state.model = model
+        end
+      end)
     end
   end
 

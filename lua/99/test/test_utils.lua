@@ -30,11 +30,18 @@ M.created_files = {}
 
 --- @class _99.test.Provider : _99.Providers.BaseProvider
 --- @field request _99.test.ProviderRequest?
+--- @field interrupt_calls number
 local TestProvider = {}
 TestProvider.__index = TestProvider
 
 function TestProvider.new()
-  return setmetatable({}, TestProvider)
+  return setmetatable({ interrupt_calls = 0 }, TestProvider)
+end
+
+--- @return boolean
+function TestProvider:interrupt()
+  self.interrupt_calls = self.interrupt_calls + 1
+  return true
 end
 
 --- @param query string

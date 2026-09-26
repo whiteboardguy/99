@@ -1,5 +1,6 @@
 " covers all package managers i am willing to cover
-set rtp+=.
+" prepend so the working copy wins over any installed opt copy of 99
+set rtp^=.
 set rtp+=../plenary.nvim
 set rtp+=~/.vim/plugged/plenary.nvim
 set rtp+=~/.local/share/nvim/site/pack/packer/start/plenary.nvim

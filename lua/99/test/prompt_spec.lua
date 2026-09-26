@@ -26,6 +26,21 @@ describe("prompt", function()
     eq("search: find important changes", prompt:summary())
   end)
 
+  it("interrupts the provider when a request is cancelled", function()
+    local provider = test_utils.TestProvider.new()
+    _99.setup(test_utils.get_test_setup_options({}, provider))
+    test_utils.create_file({ "hello" }, "lua", 1, 0)
+
+    local state = _99.__get_state()
+    local context = Prompt.search(state)
+    context:start_request()
+    eq(0, provider.interrupt_calls)
+
+    context:cancel()
+    eq(1, provider.interrupt_calls)
+    eq("cancelled", context.state)
+  end)
+
   describe("finalize output discipline", function()
     --- @return string
     local function finalized(operation)

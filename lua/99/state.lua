@@ -88,11 +88,11 @@ end
 --- @field prompts _99.Prompts
 --- @field ai_stdout_rows number
 --- @field display_errors boolean
---- @field auto_add_skills boolean
 --- @field provider_override _99.Providers.BaseProvider | nil
 --- @field __view_log_idx number
 --- @field __tmp_dir string | nil
 --- @field opencode_no_session_persistence boolean
+--- @field opencode_agent string
 --- @field pi_thinking string
 
 --- unanswered question -- will i need to queue messages one at a time or
@@ -110,6 +110,7 @@ end
 --- @field tracking _99.State.Tracking
 --- @field __tmp_dir string | nil
 --- @field opencode_no_session_persistence boolean
+--- @field opencode_agent string
 --- @field pi_thinking string
 local State = {}
 State.__index = State
@@ -119,11 +120,12 @@ local function create()
   return {
     model = "opencode/claude-sonnet-4-5",
     md_files = {},
-    ai_stdout_rows = 3,
+    ai_stdout_rows = 1,
     display_errors = false,
     provider_override = nil,
     tmp_dir = nil,
     opencode_no_session_persistence = true,
+    opencode_agent = "build",
     pi_thinking = "max",
   }
 end
@@ -165,6 +167,14 @@ function State.new(opts)
     _99_state.pi_thinking = assert_pi_thinking(opts.pi_thinking)
   end
 
+  if opts.opencode_agent ~= nil then
+    assert(
+      type(opts.opencode_agent) == "string",
+      "opts.opencode_agent must be a string"
+    )
+    _99_state.opencode_agent = opts.opencode_agent
+  end
+
   _99_state.provider_override = opts.provider
   _99_state.provider_extra_args = opts.provider_extra_args or {}
   _99_state.completion = opts.completion or default_completion()
@@ -200,7 +210,7 @@ end
 --- @return boolean
 function State:active()
   _ = self
-  if Window.has_active_window() then
+  if Window.has_capture_window() then
     return true
   end
 

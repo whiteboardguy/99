@@ -26,7 +26,8 @@ local buf_valid = vim.api.nvim_buf_is_valid
 --- @field border nil | string | string[]
 --- @field zindex number?
 --- @field relative string?
---- @field title string
+--- @field focusable boolean?
+--- @field title string?
 
 --- @class _99.window.Window
 --- @field config _99.window.Config
@@ -58,30 +59,18 @@ local function get_ui_dimensions()
   return ui.width, ui.height
 end
 
---- @return _99.window.Config
-local function create_window_top_config()
-  local width, _ = get_ui_dimensions()
-  return {
-    width = width - 2,
-    height = 3,
-    anchor = "NE",
-    border = "rounded",
-  }
-end
-
 --- @param zindex number
---- @param title string
 --- @return _99.window.Config
-local function create_transparent_top_right_config(zindex, title)
+local function create_transparent_top_right_config(zindex)
   local width, _ = get_ui_dimensions()
   return {
     width = math.floor(width / 3),
-    height = 3,
+    height = 1,
     col = width,
     anchor = "NE",
     border = nil,
+    focusable = false,
     zindex = zindex,
-    title = title,
   }
 end
 
@@ -115,8 +104,8 @@ end
 --- @return _99.window.Config
 local function create_centered_window()
   local width, height = get_ui_dimensions()
-  local win_width = math.floor(width * 2 / 3)
-  local win_height = math.floor(height / 3)
+  local win_width = math.floor(width / 2)
+  local win_height = math.max(6, math.min(math.floor(height / 3), 12))
   return {
     width = win_width,
     height = win_height,
@@ -129,7 +118,7 @@ end
 --- @param config _99.window.Config
 --- @param title string?
 local function full_config(config, title)
-  return {
+  local out = {
     relative = config.relative or "editor",
     width = config.width,
     height = config.height,
@@ -138,10 +127,15 @@ local function full_config(config, title)
     anchor = config.anchor,
     style = "minimal",
     border = config.border,
-    title = title or config.title,
-    title_pos = "center",
     zindex = config.zindex or 1,
+    focusable = config.focusable ~= false,
   }
+  local window_title = title or config.title
+  if window_title ~= nil and window_title ~= "" then
+    out.title = window_title
+    out.title_pos = "center"
+  end
+  return out
 end
 
 --- @param config _99.window.Config
@@ -166,17 +160,8 @@ end
 --- @param window _99.window.Window
 local function highlight_error(window)
   local line_count = vim.api.nvim_buf_line_count(window.buf_id)
-
   if line_count > 0 then
     vim.api.nvim_buf_set_extmark(window.buf_id, nsid, 0, 0, {
-      end_row = 1,
-      hl_group = "Normal",
-      hl_eol = true,
-    })
-  end
-
-  if line_count > 1 then
-    vim.api.nvim_buf_set_extmark(window.buf_id, nsid, 1, 0, {
       end_row = line_count,
       hl_group = "ErrorMsg",
       hl_eol = true,
@@ -184,19 +169,17 @@ local function highlight_error(window)
   end
 end
 
+--- Compact error surface: title plus the message, no banner copy.  Reserve
+--- it for fatal or explicitly requested cases; failures normally go through
+--- vim.notify (see 99.ops.error).
+---
 --- @param error_text string
 --- @return _99.window.Window
 function M.display_error(error_text)
-  local window =
-    create_floating_window(create_window_top_config(), " 99 Error ", false)
-  local lines = vim.split(error_text, "\n")
-
-  table.insert(lines, 1, "")
-  table.insert(
-    lines,
-    1,
-    "99: Fatal operational error encountered (error logs may have more in-depth information)"
-  )
+  local config = create_centered_window()
+  config.height = math.min(config.height, 10)
+  local window = create_floating_window(config, " 99 ", true)
+  local lines = ensure_no_new_lines(vim.split(error_text, "\n"))
 
   vim.api.nvim_buf_set_lines(window.buf_id, 0, -1, false, lines)
   highlight_error(window)
@@ -217,29 +200,6 @@ end
 --- @return boolean
 function M.valid(window)
   return win_valid(window.win_id) and buf_valid(window.buf_id)
-end
-
---- @param text string
-function M.display_cancellation_message(text)
-  local config = create_transparent_top_right_config(100, " 99 Cancelled ")
-  local window = create_floating_window(config, " 99 Cancelled ", false)
-  local lines = vim.split(text, "\n")
-
-  vim.api.nvim_buf_set_lines(window.buf_id, 0, -1, false, lines)
-
-  vim.api.nvim_buf_set_extmark(window.buf_id, nsid, 0, 0, {
-    end_row = vim.api.nvim_buf_line_count(window.buf_id),
-    hl_group = "WarningMsg",
-    hl_eol = true,
-  })
-
-  vim.defer_fn(function()
-    if win_valid(window.win_id) then
-      M.clear_active_popups()
-    end
-  end, 5000)
-
-  return window
 end
 
 --- TODO: i dont like how the other interfaces have text being passed in
@@ -612,47 +572,57 @@ function M.clear_active_popups()
   M.active_windows = {}
 end
 
+--- Single-line, borderless status strip in the top right.  The caller feeds
+--- the text through set_status_text.
+---
 --- @return _99.window.Window
 function M.status_window()
   M.clear_active_popups()
-  local config = create_transparent_top_right_config(100, " 99 - Status ")
-  local window = create_floating_window(config, " 99 - Status ", false)
+  local config = create_transparent_top_right_config(100)
+  local window = create_floating_window(config, nil, false)
   window.type = "status"
   return window
 end
 
+--- Resize only when the geometry actually changed; both dimensions matter
+--- (the old height-only guard ignored width updates).
+---
 --- @param win _99.window.Window
 --- @param width number
 --- @param height number
 function M.resize(win, width, height)
-  if win.config.height == height then
+  assert(M.is_active_window(win), "you cannot pass in an inactive window")
+  if win.config.height == height and win.config.width == width then
     return
   end
-  assert(M.is_active_window(win), "you cannot pass in an inactive window")
   win.config.height = height
   win.config.width = width
   vim.api.nvim_win_set_config(win.win_id, full_config(win.config))
 end
 
+--- Replace the status strip content, sizing the window to the text (capped
+--- at a third of the screen).
+---
+--- @param win _99.window.Window
+--- @param text string
+function M.set_status_text(win, text)
+  if not M.valid(win) then
+    return
+  end
+  local ui_width = get_ui_dimensions()
+  local width = math.max(12, vim.fn.strdisplaywidth(text) + 2)
+  width = math.min(width, math.floor(ui_width / 3))
+  M.resize(win, width, 1)
+  vim.api.nvim_buf_set_lines(win.buf_id, 0, -1, false, { text })
+end
+
 --- @return boolean
-function M.has_active_windows()
+function M.has_windows()
   return #M.active_windows > 0
 end
 
 --- @return boolean
-function M.has_active_status_window()
-  local has = false
-  for _, w in ipairs(M.active_windows) do
-    if w.type == "status" then
-      has = true
-      break
-    end
-  end
-  return has
-end
-
---- @return boolean
-function M.has_active_window()
+function M.has_capture_window()
   for _, w in ipairs(M.active_windows) do
     if
       w.type == "capture_input"

@@ -72,4 +72,31 @@ describe("Window", function()
       { 0, 15, 21, "Comment" },
     }, highlights)
   end)
+
+  it("updates width even when the height is unchanged", function()
+    local win = Window.capture_input("Prompt", {
+      cb = function() end,
+      keymap = {},
+    })
+    local before = vim.api.nvim_win_get_config(win.win_id)
+
+    Window.resize(win, before.width + 5, before.height)
+
+    local after = vim.api.nvim_win_get_config(win.win_id)
+    eq(before.width + 5, after.width)
+    eq(before.height, after.height)
+  end)
+
+  it("renders the status strip as a single borderless line", function()
+    local win = Window.status_window()
+    Window.set_status_text(win, "⠋ 2 · search visual")
+
+    local lines = vim.api.nvim_buf_get_lines(win.buf_id, 0, -1, false)
+    eq({ "⠋ 2 · search visual" }, lines)
+
+    local config = vim.api.nvim_win_get_config(win.win_id)
+    eq(1, config.height)
+    assert.is_true(config.border == nil or config.border == "none")
+    eq(false, config.focusable)
+  end)
 end)

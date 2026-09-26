@@ -18,7 +18,8 @@ local function create_throbber(ease_fn)
   ease_fn = ease_fn or function(p)
     return p
   end
-  local icon_set = throb_icons[math.random(#throb_icons)]
+  --- one shared icon set: varying it per request just looks like flicker
+  local icon_set = throb_icons[1]
   return function(percent)
     local eased = ease_fn(percent)
     local index = math.floor(eased * #icon_set) + 1

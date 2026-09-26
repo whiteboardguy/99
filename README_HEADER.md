@@ -33,10 +33,12 @@ Referenced content is automatically resolved and injected into the AI context. R
 
 | Provider | CLI tool | Default model |
 |---|---|---|
-| `OpenCodeProvider` (default) | `opencode` | `opencode/claude-sonnet-4-5` |
+| `OpenCodeProvider` (default) | `opencode` | resolved from opencode on v2, `opencode/claude-sonnet-4-5` fallback |
 | `ClaudeCodeProvider` | `claude` | `claude-sonnet-4-5` |
 | `CursorAgentProvider` | `cursor-agent` | `sonnet-4.5` |
+| `KiroProvider` | `kiro-cli` | `claude-sonnet-4.5` |
 | `GeminiCLIProvider` | `gemini` | `auto` |
+| `PiProvider` | `pi` | `inclusionai/ling-3.0-flash-fin:free` |
 
 ```lua
 _99.setup({
@@ -45,6 +47,16 @@ _99.setup({
     model = "claude-sonnet-4-5",
 })
 ```
+
+### OpenCode v1 and v2
+Both opencode versions work. On v2 (`opencode --version` reports 2.x):
+
+- the model picker lists `provider/model` plus `provider/model#variant` entries for reasoning variants
+- when no `model` is configured, 99 asks opencode for its default model
+- `opencode_no_session_persistence` (default `true`) deletes the request's session by id once it finishes, so no clutter lands in your project's session list. Set it to `false` to keep sessions for later inspection.
+- cancelling a request interrupts the running session through the opencode api before killing the client, so server-side work actually stops
+
+Set `opencode_agent` to run requests through a different opencode agent (default `"build"`).
 
 ## Extensions
 

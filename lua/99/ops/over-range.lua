@@ -3,6 +3,7 @@ local Mark = require("99.ops.marks")
 local geo = require("99.geo")
 local make_prompt = require("99.ops.make-prompt")
 local CleanUp = require("99.ops.clean-up")
+local Error = require("99.ops.error")
 
 local make_clean_up = CleanUp.make_clean_up
 local make_observer = CleanUp.make_observer
@@ -129,15 +130,13 @@ local function over_range(context, opts)
     Point.from_mark(bottom_mark)
   )
 
-  local display_ai_status = context._99.ai_stdout_rows > 1
   local top_status = RequestStatus.new(
     250,
     context._99.ai_stdout_rows or 1,
-    "Generating visual edit",
+    "Generating",
     top_mark
   )
-  local bottom_status =
-    RequestStatus.new(250, 1, "Generating for selection", bottom_mark)
+  local bottom_status = RequestStatus.new(250, 1, "", bottom_mark)
   local clean_up = make_clean_up(function()
     top_status:stop()
     bottom_status:stop()
@@ -156,18 +155,10 @@ local function over_range(context, opts)
   end
   logger:debug("visual prompt assembled", "chars", prompt_chars)
 
-  if display_ai_status then
-    top_status:push("selection: " .. range:to_string())
-    top_status:push("model: " .. context.model)
-  end
   top_status:start()
   bottom_status:start()
   context:start_request(make_observer(context, {
-    on_start = function()
-      if display_ai_status then
-        top_status:push("waiting for model output...")
-      end
-    end,
+    on_start = function() end,
     on_complete = function(status, response)
       if status == "cancelled" then
         logger:debug("request cancelled for visual selection, removing marks")
@@ -177,18 +168,17 @@ local function over_range(context, opts)
           "error response",
           response or "no response provided"
         )
-        vim.notify(
-          "[99] visual request failed: "
-            .. (response or "no response provided"):sub(1, 300),
-          vim.log.levels.ERROR
+        Error.report(
+          context._99,
+          "visual request failed: " .. (response or "no response provided")
         )
       elseif status == "success" then
         local valid = top_mark:is_valid() and bottom_mark:is_valid()
         if not valid then
-          logger:fatal(
-            -- luacheck: ignore 631
-            "the original visual_selection has been destroyed.  You cannot delete the original visual selection during a request"
-          )
+          local message = "the original visual_selection has been destroyed.  "
+            .. "You cannot delete the original visual selection during a request"
+          logger:error("visual selection destroyed during request")
+          Error.report(context._99, message, { fatal = true })
           return
         end
 
@@ -207,10 +197,7 @@ local function over_range(context, opts)
             2
           )
           if choice ~= 1 then
-            vim.notify(
-              "[99] visual replacement rejected: " .. reason,
-              vim.log.levels.WARN
-            )
+            Error.report(context._99, "visual replacement rejected: " .. reason)
             return
           end
           logger:warn(
@@ -245,9 +232,7 @@ local function over_range(context, opts)
     -- human payload (text part, thinking, tool call, error) instead of the
     -- raw envelope
     on_stdout_line = function(line)
-      if display_ai_status then
-        top_status:push(RequestStatus.format_ai_line(line))
-      end
+      top_status:push(line)
     end,
   }))
 end

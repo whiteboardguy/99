@@ -59,6 +59,69 @@ function M.read_file_json_safe(path)
   end
 end
 
+--- Wrap a function so it only ever runs once.  Later calls are no-ops.
+---
+--- @generic T
+--- @param fn T
+--- @return T
+function M.once(fn)
+  local called = false
+  return function(...)
+    if called then
+      return
+    end
+    called = true
+    return fn(...)
+  end
+end
+
+--- Decode one JSON line, returning nil instead of raising on bad input.
+---
+--- @param line string
+--- @return table | nil
+function M.decode_json_line(line)
+  if type(line) ~= "string" or vim.trim(line) == "" then
+    return nil
+  end
+  local ok, obj = pcall(vim.json.decode, line)
+  if not ok or type(obj) ~= "table" then
+    return nil
+  end
+  return obj
+end
+
+--- @param text string
+--- @return string
+function M.one_line(text)
+  return vim.trim(text:gsub("[\r\n]+", " "))
+end
+
+--- @param text string
+--- @param max number
+--- @return string
+function M.truncate(text, max)
+  if #text <= max then
+    return text
+  end
+  return text:sub(1, max) .. " …"
+end
+
+--- Provider command builders place the user prompt as the final positional
+--- arg.  Injecting extra CLI args before that preserves flag parsing.
+---
+--- @param command string[]
+--- @param extra_args string[]
+--- @return string[]
+function M.add_args_before_prompt(command, extra_args)
+  if not extra_args or #extra_args == 0 then
+    return command
+  end
+  local prompt = table.remove(command)
+  vim.list_extend(command, extra_args)
+  table.insert(command, prompt)
+  return command
+end
+
 --- @param obj table
 ---@param path string
 function M.write_file_json_safe(obj, path)

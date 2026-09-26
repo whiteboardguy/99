@@ -50,7 +50,7 @@ function StatusWindow.new(_99, opts)
   }, StatusWindow)
 end
 
-function StatusWindow:_shutdown_status_window()
+function StatusWindow:_shutdown()
   if self.throbber then
     self.throbber:stop()
   end
@@ -63,9 +63,41 @@ function StatusWindow:_shutdown_status_window()
   self.throbber = nil
 end
 
+--- single line: spinner, active request count, and the operation names.
+--- e.g. `⠋ 2 · search visual`
+---
+--- @param icon string
+function StatusWindow:_render(icon)
+  local win = self.win
+  if win == nil or not Window.valid(win) then
+    self:_shutdown()
+    return
+  end
+
+  local count = self._99.tracking:active_count()
+  if count == 0 then
+    self:_shutdown()
+    return
+  end
+
+  local operations = {}
+  for _, context in ipairs(self._99.tracking:active()) do
+    if context.state == "requesting" then
+      table.insert(operations, context.operation)
+    end
+  end
+  table.sort(operations)
+
+  local text = icon .. " " .. tostring(count)
+  if #operations > 0 then
+    text = text .. " · " .. table.concat(operations, " ")
+  end
+  Window.set_status_text(win, text)
+end
+
 function StatusWindow:_run_loop()
   if self.state ~= "running" then
-    self:_shutdown_status_window()
+    self:_shutdown()
     return
   end
   vim.defer_fn(function()
@@ -73,23 +105,19 @@ function StatusWindow:_run_loop()
   end, self.opts.in_flight_interval)
 
   Window.refresh_active_windows()
-  local current_win = self.win
-  if current_win ~= nil and not Window.is_active_window(current_win) then
-    self:_shutdown_status_window()
-  end
 
-  local active_window = Window.has_active_status_window()
-  local active_other_window = Window.has_active_windows()
-  local active_requests = self._99.tracking:active_count()
-  if
-    active_window == false and active_other_window
-    or active_window and active_requests > 0
-    or active_window == false and active_requests == 0
-  then
+  --- idle: take the strip away
+  if self._99.tracking:active_count() == 0 then
+    self:_shutdown()
     return
   end
 
-  if current_win == nil then
+  --- a capture prompt owns the screen; the strip comes back when it closes
+  if self.win == nil and Window.has_capture_window() then
+    return
+  end
+
+  if self.win == nil or not Window.valid(self.win) then
     local ok, win = pcall(Window.status_window)
     if not ok then
       --- TODO: There needs to be a way to display logs for "all active requests"
@@ -97,33 +125,11 @@ function StatusWindow:_run_loop()
       return
     end
 
-    local throb = Throbber.new(function(throb)
-      local count = self._99.tracking:active_count()
-      local win_valid = Window.valid(win)
-
-      if count == 0 or not win_valid then
-        return self:_shutdown_status_window()
-      end
-
-      --- @type string[]
-      local lines = {
-        throb .. " requests(" .. tostring(count) .. ") " .. throb,
-      }
-
-      for _, c in ipairs(self._99.tracking:active()) do
-        if c.state == "requesting" then
-          table.insert(lines, c.operation)
-        end
-      end
-
-      Window.resize(win, #lines[1], #lines)
-      vim.api.nvim_buf_set_lines(win.buf_id, 0, -1, false, lines)
-    end, self.opts.throbber_opts)
-
     self.win = win
-    self.throbber = throb
-
-    throb:start()
+    self.throbber = Throbber.new(function(icon)
+      self:_render(icon)
+    end, self.opts.throbber_opts)
+    self.throbber:start()
   end
 end
 

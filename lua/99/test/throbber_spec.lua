@@ -17,6 +17,7 @@ describe("Throbber", function()
       local timings = {
         throb_time = 600,
         cooldown_time = 200,
+        tick_time = 100,
       }
 
       local received = {}

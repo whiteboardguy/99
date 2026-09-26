@@ -1,6 +1,7 @@
 local make_prompt = require("99.ops.make-prompt")
 local CleanUp = require("99.ops.clean-up")
 local QFixHelpers = require("99.ops.qfix-helpers")
+local Error = require("99.ops.error")
 
 local make_observer = CleanUp.make_observer
 
@@ -57,10 +58,9 @@ local function vibe(context, opts)
         "error response",
         response or "no response provided"
       )
-      vim.notify(
-        "[99] vibe request failed: "
-          .. (response or "no response provided"):sub(1, 300),
-        vim.log.levels.ERROR
+      Error.report(
+        context._99,
+        "vibe request failed: " .. (response or "no response provided")
       )
     elseif status == "success" then
       finish_vibe(context, response)
